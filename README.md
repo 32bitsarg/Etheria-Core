@@ -1,4 +1,4 @@
-# 🏰 Etheria MMO Server - Backend Completo
+# 🏰 Etheria Core - Backend Engine Completo
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go)](https://golang.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-316192?style=for-the-badge&logo=postgresql)](https://postgresql.org/)
@@ -6,10 +6,10 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker)](https://docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
-> **Servidor backend completo para un MMO de estrategia medieval tipo Clash of Clans**  
+> **Etheria Core - Motor backend completo para MMO de estrategia medieval tipo Clash of Clans**  
 > Desarrollado por [@32bitsarg](https://github.com/32bitsarg)
 
-Un servidor backend robusto y escalable desarrollado en Go para crear juegos MMO de estrategia medieval. Incluye todas las funcionalidades necesarias para un juego completo: autenticación, gestión de mundos, aldeas, recursos, edificios, unidades militares, chat en tiempo real, comercio, alianzas, combate, héroes, misiones, logros y mucho más.
+**Etheria Core** es un motor backend robusto y escalable desarrollado en Go para crear juegos MMO de estrategia medieval. Incluye todas las funcionalidades necesarias para un juego completo: autenticación, gestión de mundos, aldeas, recursos, edificios, unidades militares, chat en tiempo real, comercio, alianzas, combate, héroes, misiones, logros y mucho más.
 
 ## 🎮 Características Principales
 
@@ -79,7 +79,7 @@ Un servidor backend robusto y escalable desarrollado en Go para crear juegos MMO
 - **Estadísticas detalladas** - Análisis completo de progreso
 - **Historial de rankings** - Evolución temporal
 
-## 🚀 Inicio Rápido
+## 🚀 Inicio Rápido con Etheria Core
 
 ### Prerrequisitos
 - **Go 1.21+**
@@ -89,10 +89,10 @@ Un servidor backend robusto y escalable desarrollado en Go para crear juegos MMO
 
 ### Instalación
 
-1. **Clonar el repositorio**
+1. **Clonar Etheria Core**
 ```bash
-git clone https://github.com/32bitsarg/ethernia-mmo-server.git
-cd ethernia-mmo-server
+git clone https://github.com/32bitsarg/ethereum-core-backend.git
+cd ethereum-core-backend
 ```
 
 2. **Configurar la base de datos**
@@ -278,11 +278,11 @@ GET  /health                       # Estado del servidor
 GET  /api/server/info              # Información del servidor
 ```
 
-## 🏗️ Arquitectura
+## 🏗️ Arquitectura de Etheria Core
 
 ### Estructura del Proyecto
 ```
-ethernia-mmo-server/
+ethereum-core-backend/
 ├── main.go                    # Punto de entrada
 ├── server/                    # Configuración del servidor
 ├── handlers/                  # Manejadores HTTP
@@ -380,7 +380,7 @@ Los logs se generan en formato estructurado usando Zap:
 - **ERROR**: Errores que requieren atención
 - **DEBUG**: Información detallada para desarrollo
 
-## 🚀 Despliegue
+## 🚀 Despliegue de Etheria Core
 
 ### Desarrollo Local
 ```bash
