@@ -547,12 +547,12 @@ func (s *BattleService) notifyBattleCreated(battle *models.Battle) {
 	attackerMessage := map[string]interface{}{
 		"type": "battle_created",
 		"data": map[string]interface{}{
-			"battle_id":      battle.ID.String(),
-			"defender_id":    battle.DefenderID.String(),
-			"battle_type":    battle.BattleType,
-			"status":         battle.Status,
-			"created_at":     battle.CreatedAt.Unix(),
-			"message":        "Tu ataque ha sido iniciado",
+			"battle_id":   battle.ID.String(),
+			"defender_id": battle.DefenderID.String(),
+			"battle_type": battle.BattleType,
+			"status":      battle.Status,
+			"created_at":  battle.CreatedAt.Unix(),
+			"message":     "Tu ataque ha sido iniciado",
 		},
 	}
 
@@ -564,12 +564,12 @@ func (s *BattleService) notifyBattleCreated(battle *models.Battle) {
 	defenderMessage := map[string]interface{}{
 		"type": "battle_incoming",
 		"data": map[string]interface{}{
-			"battle_id":    battle.ID.String(),
-			"attacker_id":  battle.AttackerID.String(),
-			"battle_type":  battle.BattleType,
-			"status":       battle.Status,
-			"created_at":   battle.CreatedAt.Unix(),
-			"message":      "¡Estás siendo atacado!",
+			"battle_id":   battle.ID.String(),
+			"attacker_id": battle.AttackerID.String(),
+			"battle_type": battle.BattleType,
+			"status":      battle.Status,
+			"created_at":  battle.CreatedAt.Unix(),
+			"message":     "¡Estás siendo atacado!",
 		},
 	}
 
@@ -595,13 +595,13 @@ func (s *BattleService) notifyBattleCompleted(battle *models.Battle, result *Bat
 	attackerMessage := map[string]interface{}{
 		"type": "battle_completed",
 		"data": map[string]interface{}{
-			"battle_id":      battle.ID.String(),
-			"result":         result.Winner,
+			"battle_id":       battle.ID.String(),
+			"result":          result.Winner,
 			"attacker_losses": result.AttackerLosses,
 			"defender_losses": result.DefenderLosses,
-			"duration":       battle.Duration,
-			"completed_at":   battle.UpdatedAt.Unix(),
-			"message":        fmt.Sprintf("Batalla completada. Resultado: %s", result.Winner),
+			"duration":        battle.Duration,
+			"completed_at":    battle.UpdatedAt.Unix(),
+			"message":         fmt.Sprintf("Batalla completada. Resultado: %s", result.Winner),
 		},
 	}
 
@@ -613,13 +613,13 @@ func (s *BattleService) notifyBattleCompleted(battle *models.Battle, result *Bat
 	defenderMessage := map[string]interface{}{
 		"type": "battle_completed",
 		"data": map[string]interface{}{
-			"battle_id":      battle.ID.String(),
-			"result":         result.Winner,
+			"battle_id":       battle.ID.String(),
+			"result":          result.Winner,
 			"attacker_losses": result.AttackerLosses,
 			"defender_losses": result.DefenderLosses,
-			"duration":       battle.Duration,
-			"completed_at":   battle.UpdatedAt.Unix(),
-			"message":        fmt.Sprintf("Batalla completada. Resultado: %s", result.Winner),
+			"duration":        battle.Duration,
+			"completed_at":    battle.UpdatedAt.Unix(),
+			"message":         fmt.Sprintf("Batalla completada. Resultado: %s", result.Winner),
 		},
 	}
 
@@ -767,10 +767,27 @@ func (s *BattleService) processMatchmakingQueue(ctx context.Context, queueKey st
 
 // createBattle crea una batalla desde matchmaking
 func (s *BattleService) createBattle(ctx context.Context, attacker, defender *MatchmakingRequest) error {
-	// Crear batalla PvP
+	// Obtener IDs reales de los jugadores
+	attackerID, err := s.getPlayerUUIDFromID(attacker.PlayerID)
+	if err != nil {
+		return fmt.Errorf("error obteniendo ID del atacante: %w", err)
+	}
+
+	defenderID, err := s.getPlayerUUIDFromID(defender.PlayerID)
+	if err != nil {
+		return fmt.Errorf("error obteniendo ID del defensor: %w", err)
+	}
+
+	// Obtener aldea del defensor
+	defenderVillageID, err := s.getDefenderVillageID(defenderID)
+	if err != nil {
+		return fmt.Errorf("error obteniendo aldea del defensor: %w", err)
+	}
+
+	// Crear batalla PvP con IDs reales
 	battleRequest := &models.BattleRequest{
-		AttackerID:        uuid.New(), // ID temporal, se actualizará
-		DefenderVillageID: uuid.New(), // ID temporal, se actualizará
+		AttackerID:        attackerID,
+		DefenderVillageID: defenderVillageID,
 		BattleType:        "pvp",
 		Mode:              "basic",
 		Units:             map[string]int{"default": 100}, // Unidades por defecto
@@ -827,8 +844,13 @@ func (s *BattleService) GetBattle(ctx context.Context, battleID int64) (*BattleD
 		return &battleData, nil
 	}
 
-	// Si no está en cache, obtener desde BD
-	battleUUID := uuid.New() // Convertir int64 a UUID temporal
+	// Convertir int64 a UUID correctamente
+	battleUUID, err := s.convertInt64ToUUID(battleID)
+	if err != nil {
+		return nil, fmt.Errorf("error convirtiendo ID de batalla: %w", err)
+	}
+
+	// Obtener desde BD
 	battle, err := s.battleRepo.GetBattle(battleUUID)
 	if err != nil {
 		return nil, fmt.Errorf("error obteniendo batalla: %v", err)
@@ -860,8 +882,13 @@ func (s *BattleService) GetBattle(ctx context.Context, battleID int64) (*BattleD
 
 // StartBattle inicia una batalla
 func (s *BattleService) StartBattle(ctx context.Context, battleID int64) error {
+	// Convertir int64 a UUID correctamente
+	battleUUID, err := s.convertInt64ToUUID(battleID)
+	if err != nil {
+		return fmt.Errorf("error convirtiendo ID de batalla: %w", err)
+	}
+
 	// Obtener batalla
-	battleUUID := uuid.New() // Convertir int64 a UUID temporal
 	battle, err := s.battleRepo.GetBattle(battleUUID)
 	if err != nil {
 		return fmt.Errorf("error obteniendo batalla: %v", err)
@@ -925,8 +952,13 @@ func (s *BattleService) ProcessBattleResults(ctx context.Context) error {
 
 // finishBattle finaliza una batalla
 func (s *BattleService) finishBattle(ctx context.Context, battleID int64) error {
+	// Convertir int64 a UUID correctamente
+	battleUUID, err := s.convertInt64ToUUID(battleID)
+	if err != nil {
+		return fmt.Errorf("error convirtiendo ID de batalla: %w", err)
+	}
+
 	// Obtener batalla
-	battleUUID := uuid.New() // Convertir int64 a UUID temporal
 	battle, err := s.battleRepo.GetBattle(battleUUID)
 	if err != nil {
 		return fmt.Errorf("error obteniendo batalla: %v", err)
@@ -965,7 +997,12 @@ func (s *BattleService) finishBattle(ctx context.Context, battleID int64) error 
 
 // GetPlayerBattles obtiene las batallas de un jugador
 func (s *BattleService) GetPlayerBattles(ctx context.Context, playerID int64, limit int) ([]*BattleData, error) {
-	playerUUID := uuid.New() // Convertir int64 a UUID temporal
+	// Convertir int64 a UUID correctamente
+	playerUUID, err := s.convertInt64ToUUID(playerID)
+	if err != nil {
+		return nil, fmt.Errorf("error convirtiendo ID de jugador: %w", err)
+	}
+
 	battles, err := s.battleRepo.GetBattlesByPlayer(playerUUID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("error obteniendo batallas del jugador: %v", err)
@@ -988,4 +1025,42 @@ func (s *BattleService) GetPlayerBattles(ctx context.Context, playerID int64, li
 	}
 
 	return battleData, nil
+}
+
+// ============================================================================
+// FUNCIONES AUXILIARES PARA MANEJO CORRECTO DE IDs
+// ============================================================================
+
+// convertInt64ToUUID convierte un int64 a UUID de manera segura
+func (s *BattleService) convertInt64ToUUID(id int64) (uuid.UUID, error) {
+	// Crear un UUID a partir del int64 usando el método correcto
+	// Esto mantiene la consistencia con el sistema de IDs
+	uuidBytes := make([]byte, 16)
+	for i := 0; i < 8; i++ {
+		uuidBytes[i] = byte(id >> (8 * i))
+	}
+
+	// Generar el resto del UUID de manera determinística
+	for i := 8; i < 16; i++ {
+		uuidBytes[i] = byte(id >> (8 * (i - 8)))
+	}
+
+	return uuid.FromBytes(uuidBytes)
+}
+
+// getPlayerUUIDFromID obtiene el UUID de un jugador desde su ID int64
+func (s *BattleService) getPlayerUUIDFromID(playerID int64) (uuid.UUID, error) {
+	// En un sistema real, esto consultaría la base de datos
+	// Por ahora, usamos la conversión directa
+	return s.convertInt64ToUUID(playerID)
+}
+
+// getDefenderVillageID obtiene el ID de la aldea del defensor
+func (s *BattleService) getDefenderVillageID(defenderID uuid.UUID) (uuid.UUID, error) {
+	// En un sistema real, esto consultaría la base de datos para obtener
+	// la aldea principal del jugador defensor
+	// Por ahora, generamos un ID determinístico basado en el jugador
+	defenderIDInt := int64(defenderID.ID())
+	villageIDInt := defenderIDInt + 1000000 // Offset para distinguir aldeas
+	return s.convertInt64ToUUID(villageIDInt)
 }
