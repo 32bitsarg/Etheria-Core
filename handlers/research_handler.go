@@ -8,21 +8,24 @@ import (
 
 	"server-backend/models"
 	"server-backend/repository"
+	"server-backend/services"
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
 
 type ResearchHandler struct {
-	researchRepo *repository.ResearchRepository
-	villageRepo  *repository.VillageRepository
-	logger       *zap.Logger
+	researchRepo  *repository.ResearchRepository
+	villageRepo   *repository.VillageRepository
+	researchService *services.ResearchService
+	logger        *zap.Logger
 }
 
-func NewResearchHandler(researchRepo *repository.ResearchRepository, villageRepo *repository.VillageRepository, logger *zap.Logger) *ResearchHandler {
+func NewResearchHandler(researchRepo *repository.ResearchRepository, villageRepo *repository.VillageRepository, researchService *services.ResearchService, logger *zap.Logger) *ResearchHandler {
 	return &ResearchHandler{
 		researchRepo: researchRepo,
 		villageRepo:  villageRepo,
+		researchService: researchService,
 		logger:       logger,
 	}
 }

@@ -103,6 +103,7 @@ func main() {
 	worldService := services.NewWorldService(worldRepo, playerRepo, villageRepo, allianceRepo, battleRepo, economyRepo, logger)
 	economyService := services.NewEconomyService(economyRepo, playerRepo, villageRepo, nil, logger)
 	inventoryService := services.NewInventoryService(redisService)
+	researchService := services.NewResearchService(researchRepo, villageRepo, economyRepo, battleService, logger, redisService)
 
 	// Crear WebSocket Manager
 	wsManager := websocket.NewManager(chatRepo, villageRepo, unitRepo, logger, redisService)
@@ -130,13 +131,13 @@ func main() {
 	unitHandler := handlers.NewUnitHandler(unitRepo, villageRepo, logger)
 	chatHandler := handlers.NewChatHandler(chatService, logger)
 	allianceHandler := handlers.NewAllianceHandler(allianceRepo, logger)
-	researchHandler := handlers.NewResearchHandler(researchRepo, villageRepo, logger)
+	researchHandler := handlers.NewResearchHandler(researchRepo, villageRepo, researchService, logger)
 	heroHandler := handlers.NewHeroHandler(heroRepo, logger)
 	battleHandler := handlers.NewBattleHandler(battleRepo, villageRepo, unitRepo, logger, redisService)
 	economyHandler := handlers.NewEconomyHandler(economyService, economyRepo, logger)
 	rankingHandler := handlers.NewRankingHandler(rankingRepo, logger)
 	achievementHandler := handlers.NewAchievementHandler(achievementRepo, logger)
-	questHandler := handlers.NewQuestHandler(questRepo)
+	questHandler := handlers.NewQuestHandler(questRepo, questService)
 	eventHandler := handlers.NewEventHandler(eventRepo)
 
 	// Crear TitleService y TitleHandler

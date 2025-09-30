@@ -1065,6 +1065,40 @@ func (r *EconomyRepository) GetMarketItem(itemID uuid.UUID) (*models.MarketItem,
 	return &item, nil
 }
 
+// GetTotalTrades obtiene el total de transacciones en el sistema
+func (r *EconomyRepository) GetTotalTrades() (int, error) {
+	query := `
+		SELECT COUNT(*) 
+		FROM market_transactions 
+		WHERE created_at IS NOT NULL
+	`
+	
+	var totalTrades int
+	err := r.db.QueryRow(query).Scan(&totalTrades)
+	if err != nil {
+		return 0, fmt.Errorf("error obteniendo total de transacciones: %w", err)
+	}
+	
+	return totalTrades, nil
+}
+
+// GetTradesToday obtiene el número de transacciones realizadas hoy
+func (r *EconomyRepository) GetTradesToday() (int, error) {
+	query := `
+		SELECT COUNT(*) 
+		FROM market_transactions 
+		WHERE DATE(created_at) = CURRENT_DATE
+	`
+	
+	var tradesToday int
+	err := r.db.QueryRow(query).Scan(&tradesToday)
+	if err != nil {
+		return 0, fmt.Errorf("error obteniendo transacciones de hoy: %w", err)
+	}
+	
+	return tradesToday, nil
+}
+
 // ProcessCurrencyExchange procesa un intercambio de monedas
 func (r *EconomyRepository) ProcessCurrencyExchange(exchange *models.CurrencyExchange) error {
 	// Implementar lógica de procesamiento de intercambio
