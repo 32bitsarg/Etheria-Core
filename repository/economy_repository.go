@@ -213,14 +213,108 @@ func (r *EconomyRepository) UpdatePlayerCurrency(playerID uuid.UUID, primaryDelt
 
 // GetMarketItems obtiene los items del mercado
 func (r *EconomyRepository) GetMarketItems(category string, rarity string, limit int) ([]models.MarketItem, error) {
-	// Mock temporal
-	return []models.MarketItem{}, nil
+	query := `
+		SELECT id, name, description, category, base_price, is_active
+		FROM market_items 
+		WHERE is_active = true
+	`
+
+	args := []interface{}{}
+	argIndex := 1
+
+	if category != "" {
+		query += fmt.Sprintf(" AND category = $%d", argIndex)
+		args = append(args, category)
+		argIndex++
+	}
+
+	query += " ORDER BY base_price ASC"
+
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", argIndex)
+		args = append(args, limit)
+	}
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo items del mercado: %w", err)
+	}
+	defer rows.Close()
+
+	var items []models.MarketItem
+	for rows.Next() {
+		var item models.MarketItem
+		err := rows.Scan(
+			&item.ID, &item.Name, &item.Description, &item.Category,
+			&item.BasePrice, &item.IsActive,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("error escaneando item del mercado: %w", err)
+		}
+		items = append(items, item)
+	}
+
+	return items, nil
 }
 
 // GetMarketListings obtiene las listas de venta del mercado
 func (r *EconomyRepository) GetMarketListings(itemType string, itemID int, sellerID int, status string, limit int) ([]models.MarketListing, error) {
-	// Mock temporal
-	return []models.MarketListing{}, nil
+	query := `
+		SELECT id, seller_id, item_name, quantity, 
+		       price_per_unit, currency_id, created_at, expires_at, is_active
+		FROM market_listings 
+		WHERE 1=1
+	`
+
+	args := []interface{}{}
+	argIndex := 1
+
+	if itemType != "" {
+		query += fmt.Sprintf(" AND item_type = $%d", argIndex)
+		args = append(args, itemType)
+		argIndex++
+	}
+
+	if itemID > 0 {
+		query += fmt.Sprintf(" AND item_id = $%d", argIndex)
+		args = append(args, itemID)
+		argIndex++
+	}
+
+	if sellerID > 0 {
+		query += fmt.Sprintf(" AND seller_id = $%d", argIndex)
+		args = append(args, sellerID)
+		argIndex++
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", argIndex)
+		args = append(args, limit)
+	}
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo listas de venta: %w", err)
+	}
+	defer rows.Close()
+
+	var listings []models.MarketListing
+	for rows.Next() {
+		var listing models.MarketListing
+		err := rows.Scan(
+			&listing.ID, &listing.SellerID, &listing.ItemName,
+			&listing.Quantity, &listing.PricePerUnit,
+			&listing.CurrencyID, &listing.CreatedAt, &listing.ExpiresAt, &listing.IsActive,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("error escaneando lista de venta: %w", err)
+		}
+		listings = append(listings, listing)
+	}
+
+	return listings, nil
 }
 
 // CreateMarketListing crea una nueva lista de venta
@@ -353,8 +447,36 @@ func (r *EconomyRepository) ExchangeCurrency(playerID uuid.UUID, exchangeType st
 
 // GetMarketStatistics obtiene estadísticas del mercado
 func (r *EconomyRepository) GetMarketStatistics(date time.Time) (*models.MarketStatistics, error) {
-	// Mock temporal
-	return &models.MarketStatistics{}, nil
+	// Obtener estadísticas del día
+	query := `
+		SELECT 
+			COUNT(*) as total_transactions,
+			SUM(total_price) as total_volume,
+			AVG(total_price) as average_price
+		FROM market_transactions 
+		WHERE DATE(completed_at) = DATE($1)
+	`
+
+	var stats models.MarketStatistics
+	err := r.db.QueryRow(query, date).Scan(
+		&stats.TotalTransactions, &stats.TotalVolume,
+		&stats.AveragePrice,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// No hay transacciones para esta fecha
+			stats.TotalTransactions = 0
+			stats.TotalVolume = 0
+			stats.AveragePrice = 0
+		} else {
+			return nil, fmt.Errorf("error obteniendo estadísticas del mercado: %w", err)
+		}
+	}
+
+	stats.LastUpdated = time.Now()
+
+	return &stats, nil
 }
 
 // GetEconomyDashboard obtiene el dashboard completo de economía
@@ -847,65 +969,368 @@ func (r *EconomyRepository) recordTransaction(playerID uuid.UUID, resourceType s
 
 // GetPlayerEconomyStats obtiene las estadísticas económicas de un jugador
 func (r *EconomyRepository) GetPlayerEconomyStats(playerID string) (*models.EconomyStatistics, error) {
-	// Mock temporal
-	return &models.EconomyStatistics{}, nil
+	// Obtener estadísticas de transacciones del jugador
+	query := `
+		SELECT 
+			COUNT(*) as total_transactions,
+			SUM(CASE WHEN buyer_id = $1 THEN total_price ELSE 0 END) as total_spent,
+			SUM(CASE WHEN seller_id = $1 THEN total_price ELSE 0 END) as total_earned,
+			AVG(total_price) as average_transaction_value
+		FROM market_transactions 
+		WHERE buyer_id = $1 OR seller_id = $1
+	`
+
+	var stats models.EconomyStatistics
+	err := r.db.QueryRow(query, playerID).Scan(
+		&stats.TotalTransactions, &stats.TotalIncome,
+		&stats.TotalExpenses, &stats.AverageTransaction,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// No hay transacciones para este jugador
+			stats.TotalTransactions = 0
+			stats.TotalIncome = 0
+			stats.TotalExpenses = 0
+			stats.AverageTransaction = 0
+		} else {
+			return nil, fmt.Errorf("error obteniendo estadísticas del jugador: %w", err)
+		}
+	}
+
+	// Calcular net worth
+	stats.NetWorth = stats.TotalIncome - stats.TotalExpenses
+
+	stats.PlayerID = uuid.MustParse(playerID)
+	stats.UpdatedAt = time.Now()
+
+	return &stats, nil
 }
 
 // GetRecentTransactions obtiene las transacciones recientes
 func (r *EconomyRepository) GetRecentTransactions() ([]models.MarketTransaction, error) {
-	// Mock temporal
-	return []models.MarketTransaction{}, nil
+	query := `
+		SELECT id, buyer_id, seller_id, item_name, quantity,
+		       price_per_unit, total_price, completed_at
+		FROM market_transactions 
+		ORDER BY completed_at DESC
+		LIMIT 50
+	`
+
+	rows, err := r.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo transacciones recientes: %w", err)
+	}
+	defer rows.Close()
+
+	var transactions []models.MarketTransaction
+	for rows.Next() {
+		var transaction models.MarketTransaction
+		err := rows.Scan(
+			&transaction.ID, &transaction.BuyerID, &transaction.SellerID,
+			&transaction.ItemName, &transaction.Quantity,
+			&transaction.PricePerUnit, &transaction.TotalPrice,
+			&transaction.CompletedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("error escaneando transacción: %w", err)
+		}
+		transactions = append(transactions, transaction)
+	}
+
+	return transactions, nil
 }
 
 // GetMarketItem obtiene un item específico del mercado
 func (r *EconomyRepository) GetMarketItem(itemID uuid.UUID) (*models.MarketItem, error) {
-	// Mock temporal
-	return &models.MarketItem{
-		ID:          itemID.String(),
-		Name:        "Mock Item",
-		Description: "Mock description",
-		Category:    "mock",
-		BasePrice:   100.0,
-		IsActive:    true,
-	}, nil
+	query := `
+		SELECT id, name, description, category, base_price, is_active
+		FROM market_items 
+		WHERE id = $1 AND is_active = true
+	`
+
+	var item models.MarketItem
+	err := r.db.QueryRow(query, itemID).Scan(
+		&item.ID, &item.Name, &item.Description, &item.Category,
+		&item.BasePrice, &item.IsActive,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("item del mercado no encontrado")
+		}
+		return nil, fmt.Errorf("error obteniendo item del mercado: %w", err)
+	}
+
+	return &item, nil
 }
 
 // ProcessCurrencyExchange procesa un intercambio de monedas
 func (r *EconomyRepository) ProcessCurrencyExchange(exchange *models.CurrencyExchange) error {
 	// Implementar lógica de procesamiento de intercambio
 	// Por ahora, solo actualizar el estado
+	return nil
+}
+
+// ============================================================================
+// FUNCIONES AUXILIARES PARA SISTEMA ECONÓMICO PROFESIONAL
+// ============================================================================
+
+// InitializePlayerResources inicializa los recursos de un jugador recién creado
+func (r *EconomyRepository) InitializePlayerResources(playerID uuid.UUID, worldID uuid.UUID) error {
+	// Recursos iniciales estándar
+	initialResources := map[string]int{
+		"gold":  1000,
+		"wood":  500,
+		"stone": 300,
+		"food":  200,
+	}
+
+	// Crear registro de recursos del jugador
 	query := `
-		UPDATE currency_exchanges 
-		SET status = $1, processed_at = $2, updated_at = $3
-		WHERE id = $4
+		INSERT INTO player_resources (
+			player_id, world_id, gold, wood, stone, food,
+			last_updated, created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8
+		)
+		ON CONFLICT (player_id, world_id) 
+		DO UPDATE SET
+			gold = EXCLUDED.gold,
+			wood = EXCLUDED.wood,
+			stone = EXCLUDED.stone,
+			food = EXCLUDED.food,
+			last_updated = EXCLUDED.last_updated
 	`
 
-	_, err := r.db.Exec(query, "completed", time.Now(), time.Now(), exchange.ID)
+	now := time.Now()
+	_, err := r.db.Exec(query,
+		playerID, worldID,
+		initialResources["gold"], initialResources["wood"],
+		initialResources["stone"], initialResources["food"],
+		now, now,
+	)
+
 	if err != nil {
-		return fmt.Errorf("error procesando intercambio: %w", err)
+		return fmt.Errorf("error inicializando recursos del jugador: %w", err)
+	}
+
+	// Registrar transacción inicial
+	err = r.RecordResourceTransaction(playerID, "initial_resources", initialResources, "system")
+	if err != nil {
+		r.logger.Warn("Error registrando transacción inicial", zap.Error(err))
 	}
 
 	return nil
 }
 
-// GetTotalTrades obtiene el total de transacciones registradas
-func (r *EconomyRepository) GetTotalTrades() (int, error) {
-	var count int
-	query := `SELECT COUNT(*) FROM market_transactions`
-	err := r.db.QueryRow(query).Scan(&count)
+// UpdatePlayerResourcesSafe actualiza los recursos de un jugador de manera segura
+func (r *EconomyRepository) UpdatePlayerResourcesSafe(playerID uuid.UUID, worldID uuid.UUID, resourceChanges map[string]int) error {
+	// Obtener recursos actuales
+	currentResources, err := r.GetPlayerResources(playerID)
 	if err != nil {
-		return 0, fmt.Errorf("error contando transacciones: %w", err)
+		return fmt.Errorf("error obteniendo recursos actuales: %w", err)
 	}
-	return count, nil
+
+	// Calcular nuevos recursos
+	newResources := map[string]int{
+		"gold":  currentResources.Gold + resourceChanges["gold"],
+		"wood":  currentResources.Wood + resourceChanges["wood"],
+		"stone": currentResources.Stone + resourceChanges["stone"],
+		"food":  currentResources.Food + resourceChanges["food"],
+	}
+
+	// Validar que no haya recursos negativos
+	for resource, amount := range newResources {
+		if amount < 0 {
+			return fmt.Errorf("recursos insuficientes: %s (disponible: %d, requerido: %d)",
+				resource, currentResources.Gold, -resourceChanges["gold"])
+		}
+	}
+
+	// Actualizar recursos
+	query := `
+		UPDATE player_resources 
+		SET gold = $1, wood = $2, stone = $3, food = $4, last_updated = $5
+		WHERE player_id = $6
+	`
+
+	_, err = r.db.Exec(query,
+		newResources["gold"], newResources["wood"],
+		newResources["stone"], newResources["food"],
+		time.Now(), playerID,
+	)
+
+	if err != nil {
+		return fmt.Errorf("error actualizando recursos: %w", err)
+	}
+
+	// Registrar transacción
+	err = r.RecordResourceTransaction(playerID, "resource_update", resourceChanges, "system")
+	if err != nil {
+		r.logger.Warn("Error registrando transacción de recursos", zap.Error(err))
+	}
+
+	return nil
 }
 
-// GetTradesToday obtiene el número de transacciones de hoy
-func (r *EconomyRepository) GetTradesToday() (int, error) {
-	var count int
-	query := `SELECT COUNT(*) FROM market_transactions WHERE DATE(created_at) = CURRENT_DATE`
-	err := r.db.QueryRow(query).Scan(&count)
+// RecordResourceTransaction registra una transacción de recursos
+func (r *EconomyRepository) RecordResourceTransaction(playerID uuid.UUID, transactionType string, resourceChanges map[string]int, source string) error {
+	query := `
+		INSERT INTO resource_transactions (
+			id, player_id, transaction_type, gold_change, wood_change,
+			stone_change, food_change, source, created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9
+		)
+	`
+
+	_, err := r.db.Exec(query,
+		uuid.New(), playerID, transactionType,
+		resourceChanges["gold"], resourceChanges["wood"],
+		resourceChanges["stone"], resourceChanges["food"],
+		source, time.Now(),
+	)
+
 	if err != nil {
-		return 0, fmt.Errorf("error contando transacciones de hoy: %w", err)
+		return fmt.Errorf("error registrando transacción de recursos: %w", err)
 	}
-	return count, nil
+
+	return nil
+}
+
+// ValidateResourceTransaction valida si un jugador tiene suficientes recursos
+func (r *EconomyRepository) ValidateResourceTransaction(playerID uuid.UUID, requiredResources map[string]int) error {
+	resources, err := r.GetPlayerResources(playerID)
+	if err != nil {
+		return fmt.Errorf("error obteniendo recursos: %w", err)
+	}
+
+	// Verificar cada recurso requerido
+	if requiredResources["gold"] > 0 && resources.Gold < requiredResources["gold"] {
+		return fmt.Errorf("oro insuficiente: disponible %d, requerido %d", resources.Gold, requiredResources["gold"])
+	}
+	if requiredResources["wood"] > 0 && resources.Wood < requiredResources["wood"] {
+		return fmt.Errorf("madera insuficiente: disponible %d, requerido %d", resources.Wood, requiredResources["wood"])
+	}
+	if requiredResources["stone"] > 0 && resources.Stone < requiredResources["stone"] {
+		return fmt.Errorf("piedra insuficiente: disponible %d, requerido %d", resources.Stone, requiredResources["stone"])
+	}
+	if requiredResources["food"] > 0 && resources.Food < requiredResources["food"] {
+		return fmt.Errorf("comida insuficiente: disponible %d, requerido %d", resources.Food, requiredResources["food"])
+	}
+
+	return nil
+}
+
+// ProcessMarketTransaction procesa una transacción de mercado completa
+func (r *EconomyRepository) ProcessMarketTransaction(buyerID, sellerID uuid.UUID, itemName string, quantity int, pricePerUnit float64) error {
+	totalPrice := float64(quantity) * pricePerUnit
+
+	// Iniciar transacción de base de datos
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("error iniciando transacción: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Verificar que el comprador tiene suficientes recursos
+	buyerResources, err := r.getPlayerResourcesTx(tx, buyerID)
+	if err != nil {
+		return fmt.Errorf("error obteniendo recursos del comprador: %w", err)
+	}
+
+	if buyerResources.Gold < int(totalPrice) {
+		return fmt.Errorf("oro insuficiente: disponible %d, requerido %d", buyerResources.Gold, int(totalPrice))
+	}
+
+	// Actualizar recursos del comprador (restar oro)
+	err = r.updatePlayerResourcesTx(tx, buyerID, map[string]int{"gold": -int(totalPrice)})
+	if err != nil {
+		return fmt.Errorf("error actualizando recursos del comprador: %w", err)
+	}
+
+	// Actualizar recursos del vendedor (sumar oro)
+	err = r.updatePlayerResourcesTx(tx, sellerID, map[string]int{"gold": int(totalPrice)})
+	if err != nil {
+		return fmt.Errorf("error actualizando recursos del vendedor: %w", err)
+	}
+
+	// Registrar transacción de mercado
+	transactionQuery := `
+		INSERT INTO market_transactions (
+			id, buyer_id, seller_id, item_name, quantity,
+			price_per_unit, total_price, completed_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8
+		)
+	`
+
+	_, err = tx.Exec(transactionQuery,
+		uuid.New(), buyerID, sellerID, itemName, quantity,
+		pricePerUnit, totalPrice, time.Now(),
+	)
+
+	if err != nil {
+		return fmt.Errorf("error registrando transacción de mercado: %w", err)
+	}
+
+	// Confirmar transacción
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("error confirmando transacción: %w", err)
+	}
+
+	return nil
+}
+
+// Funciones auxiliares para transacciones de base de datos
+func (r *EconomyRepository) getPlayerResourcesTx(tx *sql.Tx, playerID uuid.UUID) (*models.PlayerResources, error) {
+	query := `
+		SELECT player_id, gold, wood, stone, food,
+		       last_updated, created_at
+		FROM player_resources 
+		WHERE player_id = $1
+	`
+
+	var resources models.PlayerResources
+	err := tx.QueryRow(query, playerID).Scan(
+		&resources.PlayerID, &resources.Gold,
+		&resources.Wood, &resources.Stone, &resources.Food,
+		&resources.LastUpdated, &resources.CreatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &resources, nil
+}
+
+func (r *EconomyRepository) updatePlayerResourcesTx(tx *sql.Tx, playerID uuid.UUID, resourceChanges map[string]int) error {
+	// Obtener recursos actuales
+	currentResources, err := r.getPlayerResourcesTx(tx, playerID)
+	if err != nil {
+		return err
+	}
+
+	// Calcular nuevos recursos
+	newGold := currentResources.Gold + resourceChanges["gold"]
+	newWood := currentResources.Wood + resourceChanges["wood"]
+	newStone := currentResources.Stone + resourceChanges["stone"]
+	newFood := currentResources.Food + resourceChanges["food"]
+
+	// Actualizar recursos
+	query := `
+		UPDATE player_resources 
+		SET gold = $1, wood = $2, stone = $3, food = $4, last_updated = $5
+		WHERE player_id = $6
+	`
+
+	_, err = tx.Exec(query,
+		newGold, newWood, newStone, newFood,
+		time.Now(), playerID,
+	)
+
+	return err
 }

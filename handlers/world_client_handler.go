@@ -250,14 +250,23 @@ func (h *WorldClientHandler) JoinWorld(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
 		return
 	}
-	
+
 	village, err := h.villageRepo.CreateVillage(playerID, worldID, req.VillageName, x, y)
 	if err != nil {
 		h.logger.Error("Error creando aldea inicial", zap.Error(err))
 		// No fallar la operación, solo loggear el error
 	}
 
-	// Recursos iniciales
+	// Inicializar recursos del jugador usando el sistema económico profesional
+	if h.economyRepo != nil {
+		err = h.economyRepo.InitializePlayerResources(playerID, worldID)
+		if err != nil {
+			h.logger.Error("Error inicializando recursos del jugador", zap.Error(err))
+			// No fallar la operación, solo loggear el error
+		}
+	}
+
+	// Recursos iniciales para la respuesta (ya inicializados en la base de datos)
 	startingResources := models.ResourceSet{
 		Gold:  1000,
 		Wood:  500,
