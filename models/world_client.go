@@ -46,6 +46,8 @@ type WorldJoinResponse struct {
 	VillageID         string      `json:"villageId"`
 	StartingResources ResourceSet `json:"startingResources"`
 	RedirectUrl       string      `json:"redirectUrl"`
+	AutoAssigned      bool        `json:"autoAssigned,omitempty"`
+	AssignedWorldName string      `json:"assignedWorldName,omitempty"`
 }
 
 // ResourceSet representa un conjunto de recursos

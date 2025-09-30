@@ -512,6 +512,46 @@ func (r *WorldRepository) GetPlayerCurrentWorld(playerID uuid.UUID) (*models.Wor
 }
 
 // GetWorldStatus obtiene el estado completo de un mundo
+// GetBestWorldForAssignment encuentra el mejor mundo para asignación automática
+func (r *WorldRepository) GetBestWorldForAssignment() (*models.World, error) {
+	query := `
+		SELECT id, name, description, max_players, current_players, is_active, is_online, world_type, status, last_started_at, last_stopped_at, created_at, updated_at
+		FROM worlds
+		WHERE is_active = true 
+		AND is_online = true 
+		AND status != 'maintenance'
+		AND current_players < max_players
+		ORDER BY current_players ASC, created_at ASC
+		LIMIT 1
+	`
+	
+	var world models.World
+	err := r.db.QueryRow(query).Scan(
+		&world.ID,
+		&world.Name,
+		&world.Description,
+		&world.MaxPlayers,
+		&world.CurrentPlayers,
+		&world.IsActive,
+		&world.IsOnline,
+		&world.WorldType,
+		&world.Status,
+		&world.LastStartedAt,
+		&world.LastStoppedAt,
+		&world.CreatedAt,
+		&world.UpdatedAt,
+	)
+	
+	if err == sql.ErrNoRows {
+		return nil, nil // No hay mundos disponibles
+	}
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo mejor mundo para asignación: %w", err)
+	}
+	
+	return &world, nil
+}
+
 func (r *WorldRepository) GetWorldStatus(worldID uuid.UUID) (*models.WorldStatus, error) {
 	world, err := r.GetWorldByID(worldID)
 	if err != nil {
