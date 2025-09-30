@@ -1,0 +1,31 @@
+database:
+  host: localhost
+  port: 5432
+  user: etheria_user
+  password: 15492102
+  dbname: etheria_db
+  sslmode: disable
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 10
+  min_idle_conns: 5
+  max_retries: 3
+  dial_timeout: 5s
+  read_timeout: 3s
+  write_timeout: 3s
+  pool_timeout: 4s
+
+jwt:
+  secret_key: "tu_clave_secreta_muy_segura_para_desarrollo"
+  token_duration: 24h
+
+server:
+  port: 8080
+  read_timeout: 5s
+  write_timeout: 10s
+  idle_timeout: 120s 
+timezone: "America/Mexico_City" 
