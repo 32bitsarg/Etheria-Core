@@ -406,10 +406,6 @@ func (s *EconomyService) verifyPlayerResources(playerID uuid.UUID, listing *mode
 		if resources.Stone < listing.Quantity {
 			return fmt.Errorf("piedra insuficiente")
 		}
-	case "iron":
-		if resources.Iron < listing.Quantity {
-			return fmt.Errorf("hierro insuficiente")
-		}
 	case "food":
 		if resources.Food < listing.Quantity {
 			return fmt.Errorf("comida insuficiente")
@@ -472,8 +468,8 @@ func (s *EconomyService) sendMarketNotification(playerID string, notificationTyp
 		"type": "market_notification",
 		"data": map[string]interface{}{
 			"notification_type": notificationType,
-			"timestamp":        time.Now().Unix(),
-			"data":            data,
+			"timestamp":         time.Now().Unix(),
+			"data":              data,
 		},
 	}
 

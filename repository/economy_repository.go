@@ -615,22 +615,25 @@ func (r *EconomyRepository) GetCurrencyExchangeHistory(playerID uuid.UUID, limit
 	return exchanges, nil
 }
 
-// GetPlayerResources obtiene los recursos de un jugador
+// GetPlayerResources obtiene los recursos de un jugador por village_id
 func (r *EconomyRepository) GetPlayerResources(playerID uuid.UUID) (*models.PlayerResources, error) {
 	query := `
-		SELECT player_id, gold, silver, copper, gems, premium_currency,
-		       wood, stone, iron, food, population, max_population,
-		       storage_capacity, last_updated, created_at
-		FROM player_resources
-		WHERE player_id = $1
+		SELECT r.id, r.village_id, r.wood, r.stone, r.food, r.gold, r.last_updated
+		FROM resources r
+		JOIN villages v ON r.village_id = v.id
+		WHERE v.player_id = $1
+		LIMIT 1
 	`
 
 	var resources models.PlayerResources
 	err := r.db.QueryRow(query, playerID).Scan(
-		&resources.PlayerID, &resources.Gold, &resources.Silver, &resources.Copper,
-		&resources.Gems, &resources.PremiumCurrency, &resources.Wood, &resources.Stone,
-		&resources.Iron, &resources.Food, &resources.Population, &resources.MaxPopulation,
-		&resources.StorageCapacity, &resources.LastUpdated, &resources.CreatedAt,
+		&resources.ID,
+		&resources.VillageID,
+		&resources.Wood,
+		&resources.Stone,
+		&resources.Food,
+		&resources.Gold,
+		&resources.LastUpdated,
 	)
 
 	if err != nil {
@@ -647,26 +650,16 @@ func (r *EconomyRepository) GetPlayerResources(playerID uuid.UUID) (*models.Play
 // UpdatePlayerResources actualiza los recursos de un jugador
 func (r *EconomyRepository) UpdatePlayerResources(resources *models.PlayerResources) error {
 	query := `
-		INSERT INTO player_resources (
-			player_id, gold, silver, copper, gems, premium_currency,
-			wood, stone, iron, food, population, max_population,
-			storage_capacity, last_updated, created_at
+		INSERT INTO resources (
+			id, village_id, wood, stone, food, gold, last_updated
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			$1, $2, $3, $4, $5, $6, $7
 		)
-		ON CONFLICT (player_id) DO UPDATE SET
-			gold = EXCLUDED.gold,
-			silver = EXCLUDED.silver,
-			copper = EXCLUDED.copper,
-			gems = EXCLUDED.gems,
-			premium_currency = EXCLUDED.premium_currency,
+		ON CONFLICT (village_id) DO UPDATE SET
 			wood = EXCLUDED.wood,
 			stone = EXCLUDED.stone,
-			iron = EXCLUDED.iron,
 			food = EXCLUDED.food,
-			population = EXCLUDED.population,
-			max_population = EXCLUDED.max_population,
-			storage_capacity = EXCLUDED.storage_capacity,
+			gold = EXCLUDED.gold,
 			last_updated = EXCLUDED.last_updated
 	`
 
@@ -674,10 +667,13 @@ func (r *EconomyRepository) UpdatePlayerResources(resources *models.PlayerResour
 	resources.LastUpdated = now
 
 	_, err := r.db.Exec(query,
-		resources.PlayerID, resources.Gold, resources.Silver, resources.Copper,
-		resources.Gems, resources.PremiumCurrency, resources.Wood, resources.Stone,
-		resources.Iron, resources.Food, resources.Population, resources.MaxPopulation,
-		resources.StorageCapacity, now, resources.CreatedAt,
+		resources.ID,
+		resources.VillageID,
+		resources.Wood,
+		resources.Stone,
+		resources.Food,
+		resources.Gold,
+		now,
 	)
 
 	if err != nil {
@@ -699,20 +695,10 @@ func (r *EconomyRepository) AddResources(playerID uuid.UUID, resourceType string
 	switch resourceType {
 	case "gold":
 		resources.Gold += amount
-	case "silver":
-		resources.Silver += amount
-	case "copper":
-		resources.Copper += amount
-	case "gems":
-		resources.Gems += amount
-	case "premium_currency":
-		resources.PremiumCurrency += amount
 	case "wood":
 		resources.Wood += amount
 	case "stone":
 		resources.Stone += amount
-	case "iron":
-		resources.Iron += amount
 	case "food":
 		resources.Food += amount
 	default:
@@ -747,20 +733,10 @@ func (r *EconomyRepository) RemoveResources(playerID uuid.UUID, resourceType str
 	switch resourceType {
 	case "gold":
 		currentAmount = resources.Gold
-	case "silver":
-		currentAmount = resources.Silver
-	case "copper":
-		currentAmount = resources.Copper
-	case "gems":
-		currentAmount = resources.Gems
-	case "premium_currency":
-		currentAmount = resources.PremiumCurrency
 	case "wood":
 		currentAmount = resources.Wood
 	case "stone":
 		currentAmount = resources.Stone
-	case "iron":
-		currentAmount = resources.Iron
 	case "food":
 		currentAmount = resources.Food
 	default:
@@ -775,20 +751,10 @@ func (r *EconomyRepository) RemoveResources(playerID uuid.UUID, resourceType str
 	switch resourceType {
 	case "gold":
 		resources.Gold -= amount
-	case "silver":
-		resources.Silver -= amount
-	case "copper":
-		resources.Copper -= amount
-	case "gems":
-		resources.Gems -= amount
-	case "premium_currency":
-		resources.PremiumCurrency -= amount
 	case "wood":
 		resources.Wood -= amount
 	case "stone":
 		resources.Stone -= amount
-	case "iron":
-		resources.Iron -= amount
 	case "food":
 		resources.Food -= amount
 	}
@@ -873,26 +839,28 @@ func (r *EconomyRepository) GetPlayerEconomyStatistics(playerID uuid.UUID) (*mod
 
 // createDefaultResources crea recursos por defecto para un jugador
 func (r *EconomyRepository) createDefaultResources(playerID uuid.UUID) (*models.PlayerResources, error) {
-	now := time.Now()
-	resources := &models.PlayerResources{
-		PlayerID:        playerID,
-		Gold:            1000,
-		Silver:          5000,
-		Copper:          10000,
-		Gems:            50,
-		PremiumCurrency: 10,
-		Wood:            100,
-		Stone:           100,
-		Iron:            50,
-		Food:            200,
-		Population:      10,
-		MaxPopulation:   50,
-		StorageCapacity: 1000,
-		LastUpdated:     now,
-		CreatedAt:       now,
+	// Primero obtener la aldea del jugador
+	villageQuery := `
+		SELECT id FROM villages WHERE player_id = $1 LIMIT 1
+	`
+	var villageID uuid.UUID
+	err := r.db.QueryRow(villageQuery, playerID).Scan(&villageID)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo aldea del jugador: %w", err)
 	}
 
-	err := r.UpdatePlayerResources(resources)
+	now := time.Now()
+	resources := &models.PlayerResources{
+		ID:          uuid.New(),
+		VillageID:   villageID,
+		Wood:        1000,
+		Stone:       1000,
+		Food:        1000,
+		Gold:        1000,
+		LastUpdated: now,
+	}
+
+	err = r.UpdatePlayerResources(resources)
 	if err != nil {
 		return nil, fmt.Errorf("error creando recursos por defecto: %w", err)
 	}
@@ -1072,13 +1040,13 @@ func (r *EconomyRepository) GetTotalTrades() (int, error) {
 		FROM market_transactions 
 		WHERE created_at IS NOT NULL
 	`
-	
+
 	var totalTrades int
 	err := r.db.QueryRow(query).Scan(&totalTrades)
 	if err != nil {
 		return 0, fmt.Errorf("error obteniendo total de transacciones: %w", err)
 	}
-	
+
 	return totalTrades, nil
 }
 
@@ -1089,13 +1057,13 @@ func (r *EconomyRepository) GetTradesToday() (int, error) {
 		FROM market_transactions 
 		WHERE DATE(created_at) = CURRENT_DATE
 	`
-	
+
 	var tradesToday int
 	err := r.db.QueryRow(query).Scan(&tradesToday)
 	if err != nil {
 		return 0, fmt.Errorf("error obteniendo transacciones de hoy: %w", err)
 	}
-	
+
 	return tradesToday, nil
 }
 
@@ -1112,6 +1080,16 @@ func (r *EconomyRepository) ProcessCurrencyExchange(exchange *models.CurrencyExc
 
 // InitializePlayerResources inicializa los recursos de un jugador recién creado
 func (r *EconomyRepository) InitializePlayerResources(playerID uuid.UUID, worldID uuid.UUID) error {
+	// Primero obtener la aldea del jugador
+	villageQuery := `
+		SELECT id FROM villages WHERE player_id = $1 AND world_id = $2 LIMIT 1
+	`
+	var villageID uuid.UUID
+	err := r.db.QueryRow(villageQuery, playerID, worldID).Scan(&villageID)
+	if err != nil {
+		return fmt.Errorf("error obteniendo aldea del jugador: %w", err)
+	}
+
 	// Recursos iniciales estándar
 	initialResources := map[string]int{
 		"gold":  1000,
@@ -1122,27 +1100,26 @@ func (r *EconomyRepository) InitializePlayerResources(playerID uuid.UUID, worldI
 
 	// Crear registro de recursos del jugador
 	query := `
-		INSERT INTO player_resources (
-			player_id, world_id, gold, wood, stone, food,
-			last_updated, created_at
+		INSERT INTO resources (
+			id, village_id, wood, stone, food, gold, last_updated
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8
+			$1, $2, $3, $4, $5, $6, $7
 		)
-		ON CONFLICT (player_id, world_id) 
+		ON CONFLICT (village_id) 
 		DO UPDATE SET
-			gold = EXCLUDED.gold,
 			wood = EXCLUDED.wood,
 			stone = EXCLUDED.stone,
 			food = EXCLUDED.food,
+			gold = EXCLUDED.gold,
 			last_updated = EXCLUDED.last_updated
 	`
 
 	now := time.Now()
-	_, err := r.db.Exec(query,
-		playerID, worldID,
-		initialResources["gold"], initialResources["wood"],
-		initialResources["stone"], initialResources["food"],
-		now, now,
+	_, err = r.db.Exec(query,
+		uuid.New(), villageID,
+		initialResources["wood"], initialResources["stone"],
+		initialResources["food"], initialResources["gold"],
+		now,
 	)
 
 	if err != nil {
@@ -1321,17 +1298,18 @@ func (r *EconomyRepository) ProcessMarketTransaction(buyerID, sellerID uuid.UUID
 // Funciones auxiliares para transacciones de base de datos
 func (r *EconomyRepository) getPlayerResourcesTx(tx *sql.Tx, playerID uuid.UUID) (*models.PlayerResources, error) {
 	query := `
-		SELECT player_id, gold, wood, stone, food,
-		       last_updated, created_at
-		FROM player_resources 
-		WHERE player_id = $1
+		SELECT r.id, r.village_id, r.wood, r.stone, r.food, r.gold, r.last_updated
+		FROM resources r
+		JOIN villages v ON r.village_id = v.id
+		WHERE v.player_id = $1
+		LIMIT 1
 	`
 
 	var resources models.PlayerResources
 	err := tx.QueryRow(query, playerID).Scan(
-		&resources.PlayerID, &resources.Gold,
+		&resources.ID, &resources.VillageID,
 		&resources.Wood, &resources.Stone, &resources.Food,
-		&resources.LastUpdated, &resources.CreatedAt,
+		&resources.Gold, &resources.LastUpdated,
 	)
 
 	if err != nil {

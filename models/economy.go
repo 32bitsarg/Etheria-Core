@@ -196,21 +196,13 @@ type PlayerMarketActivity struct {
 
 // PlayerResources representa los recursos de un jugador
 type PlayerResources struct {
-	PlayerID        uuid.UUID `json:"player_id" db:"player_id"`
-	Gold            int       `json:"gold" db:"gold"`
-	Silver          int       `json:"silver" db:"silver"`
-	Copper          int       `json:"copper" db:"copper"`
-	Gems            int       `json:"gems" db:"gems"`
-	PremiumCurrency int       `json:"premium_currency" db:"premium_currency"`
-	Wood            int       `json:"wood" db:"wood"`
-	Stone           int       `json:"stone" db:"stone"`
-	Iron            int       `json:"iron" db:"iron"`
-	Food            int       `json:"food" db:"food"`
-	Population      int       `json:"population" db:"population"`
-	MaxPopulation   int       `json:"max_population" db:"max_population"`
-	StorageCapacity int       `json:"storage_capacity" db:"storage_capacity"`
-	LastUpdated     time.Time `json:"last_updated" db:"last_updated"`
-	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+	ID          uuid.UUID `json:"id" db:"id"`
+	VillageID   uuid.UUID `json:"village_id" db:"village_id"`
+	Wood        int       `json:"wood" db:"wood"`
+	Stone       int       `json:"stone" db:"stone"`
+	Food        int       `json:"food" db:"food"`
+	Gold        int       `json:"gold" db:"gold"`
+	LastUpdated time.Time `json:"last_updated" db:"last_updated"`
 }
 
 // ResourceTransaction representa una transacción de recursos
