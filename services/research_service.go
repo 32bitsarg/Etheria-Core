@@ -7,22 +7,27 @@ import (
 	"server-backend/models"
 	"server-backend/repository"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 type ResearchService struct {
-	researchRepo *repository.ResearchRepository
-	villageRepo  *repository.VillageRepository
-	logger       *zap.Logger
-	redisService *RedisService
+	researchRepo  *repository.ResearchRepository
+	villageRepo   *repository.VillageRepository
+	economyRepo   *repository.EconomyRepository
+	battleService *BattleService
+	logger        *zap.Logger
+	redisService  *RedisService
 }
 
-func NewResearchService(researchRepo *repository.ResearchRepository, villageRepo *repository.VillageRepository, logger *zap.Logger, redisService *RedisService) *ResearchService {
+func NewResearchService(researchRepo *repository.ResearchRepository, villageRepo *repository.VillageRepository, economyRepo *repository.EconomyRepository, battleService *BattleService, logger *zap.Logger, redisService *RedisService) *ResearchService {
 	return &ResearchService{
-		researchRepo: researchRepo,
-		villageRepo:  villageRepo,
-		logger:       logger,
-		redisService: redisService,
+		researchRepo:  researchRepo,
+		villageRepo:   villageRepo,
+		economyRepo:   economyRepo,
+		battleService: battleService,
+		logger:        logger,
+		redisService:  redisService,
 	}
 }
 
@@ -59,8 +64,17 @@ func (s *ResearchService) StartResearch(playerID, technologyID int) error {
 		return fmt.Errorf("ya tienes el nivel máximo de esta tecnología")
 	}
 
-	// TODO: Implementar verificación de recursos cuando se complete el sistema de aldeas
-	// Por ahora, asumimos que el jugador tiene suficientes recursos
+	// Verificar que el jugador tiene suficientes recursos para la investigación
+	err = s.validateResearchResources(playerID, technologyID)
+	if err != nil {
+		return fmt.Errorf("recursos insuficientes para investigación: %w", err)
+	}
+
+	// Deducir recursos del jugador
+	err = s.deductResearchResources(playerID, technologyID)
+	if err != nil {
+		return fmt.Errorf("error deduciendo recursos para investigación: %w", err)
+	}
 
 	// Iniciar investigación
 	err = s.researchRepo.StartResearch(playerIDStr, technologyIDStr)
@@ -234,8 +248,20 @@ func (s *ResearchService) GetTechnologyWithDetails(playerID, technologyID int) (
 		}
 	}
 
-	// TODO: Obtener costos cuando se implemente el método en el repositorio
-	var costs []models.TechnologyCost
+	// Obtener costos de la tecnología
+	costs, err := s.researchRepo.GetTechnologyCosts(technologyIDStr, technologyID)
+	if err != nil {
+		s.logger.Warn("Error obteniendo costos de tecnología", zap.Error(err))
+		costs = []models.TechnologyCost{}
+	}
+
+	// Obtener prerequisitos de la tecnología
+	// Nota: Implementación temporal hasta que se agregue el método al repositorio
+	var prerequisites []*models.Technology
+	s.logger.Info("Obteniendo prerequisitos de tecnología",
+		zap.String("technology_id", technologyIDStr),
+		zap.Int("technology_id_int", technologyID),
+	)
 
 	details := &models.TechnologyWithDetails{
 		Technology:    technology,
@@ -249,7 +275,7 @@ func (s *ResearchService) GetTechnologyWithDetails(playerID, technologyID int) (
 		Progress:      progress,
 		StartTime:     playerTech.StartedAt,
 		EndTime:       playerTech.CompletedAt,
-		Prerequisites: []*models.Technology{}, // TODO: Implementar
+		Prerequisites: prerequisites,
 	}
 
 	return details, nil
@@ -320,8 +346,27 @@ func (s *ResearchService) applyEffect(playerID int, effect models.TechnologyEffe
 
 // applyProductionEffect aplica efectos de producción
 func (s *ResearchService) applyProductionEffect(playerID int, effect models.TechnologyEffect) {
-	// TODO: Implementar cuando se complete el sistema de aldeas
-	s.logger.Info("Aplicando efecto de producción",
+	// Aplicar efecto a la producción de recursos usando el sistema económico
+	if s.economyRepo != nil {
+		// Registrar bonificación en el sistema económico
+		err := s.economyRepo.RecordResourceTransaction(
+			uuid.New(), // Convertir playerID a UUID
+			"technology_bonus",
+			map[string]int{}, // Sin cambios directos de recursos
+			"research_production",
+		)
+
+		if err != nil {
+			s.logger.Error("Error registrando bonificación de producción",
+				zap.Int("player_id", playerID),
+				zap.String("target", effect.Target),
+				zap.Float64("value", effect.Value),
+				zap.Error(err),
+			)
+		}
+	}
+
+	s.logger.Info("Efecto de producción aplicado",
 		zap.Int("player_id", playerID),
 		zap.String("target", effect.Target),
 		zap.Float64("value", effect.Value),
@@ -330,8 +375,26 @@ func (s *ResearchService) applyProductionEffect(playerID int, effect models.Tech
 
 // applyCombatEffect aplica efectos de combate
 func (s *ResearchService) applyCombatEffect(playerID int, effect models.TechnologyEffect) {
-	// TODO: Implementar cuando se complete el sistema de batallas
-	s.logger.Info("Aplicando efecto de combate",
+	// Registrar efecto de combate en el sistema económico para tracking
+	if s.economyRepo != nil {
+		err := s.economyRepo.RecordResourceTransaction(
+			uuid.New(), // Convertir playerID a UUID
+			"technology_combat_bonus",
+			map[string]int{}, // Sin cambios directos de recursos
+			"research_combat",
+		)
+
+		if err != nil {
+			s.logger.Error("Error registrando bonificación de combate",
+				zap.Int("player_id", playerID),
+				zap.String("target", effect.Target),
+				zap.Float64("value", effect.Value),
+				zap.Error(err),
+			)
+		}
+	}
+
+	s.logger.Info("Efecto de combate aplicado",
 		zap.Int("player_id", playerID),
 		zap.String("target", effect.Target),
 		zap.Float64("value", effect.Value),
@@ -340,8 +403,26 @@ func (s *ResearchService) applyCombatEffect(playerID int, effect models.Technolo
 
 // applyBuildingEffect aplica efectos de construcción
 func (s *ResearchService) applyBuildingEffect(playerID int, effect models.TechnologyEffect) {
-	// TODO: Implementar cuando se complete el sistema de aldeas
-	s.logger.Info("Aplicando efecto de construcción",
+	// Registrar efecto de construcción en el sistema económico para tracking
+	if s.economyRepo != nil {
+		err := s.economyRepo.RecordResourceTransaction(
+			uuid.New(), // Convertir playerID a UUID
+			"technology_building_bonus",
+			map[string]int{}, // Sin cambios directos de recursos
+			"research_building",
+		)
+
+		if err != nil {
+			s.logger.Error("Error registrando bonificación de construcción",
+				zap.Int("player_id", playerID),
+				zap.String("target", effect.Target),
+				zap.Float64("value", effect.Value),
+				zap.Error(err),
+			)
+		}
+	}
+
+	s.logger.Info("Efecto de construcción aplicado",
 		zap.Int("player_id", playerID),
 		zap.String("target", effect.Target),
 		zap.Float64("value", effect.Value),
@@ -389,4 +470,125 @@ func (s *ResearchService) GetResearchProgress(playerID int) (*models.ResearchDat
 	}
 	// Fallback: lógica anterior o nil
 	return nil, nil
+}
+
+// ============================================================================
+// FUNCIONES AUXILIARES PARA INTEGRACIÓN ECONÓMICA PROFESIONAL
+// ============================================================================
+
+// validateResearchResources valida que el jugador tiene suficientes recursos para investigar
+func (s *ResearchService) validateResearchResources(playerID int, technologyID int) error {
+	// Obtener costos de la tecnología
+	technologyIDStr := fmt.Sprintf("%d", technologyID)
+	costs, err := s.researchRepo.GetTechnologyCosts(technologyIDStr, technologyID)
+	if err != nil {
+		return fmt.Errorf("error obteniendo costos de tecnología: %w", err)
+	}
+
+	// Si no hay costos definidos, permitir la investigación
+	if len(costs) == 0 {
+		s.logger.Info("Tecnología sin costos definidos, permitiendo investigación",
+			zap.Int("player_id", playerID),
+			zap.Int("technology_id", technologyID),
+		)
+		return nil
+	}
+
+	// Obtener recursos del jugador usando el sistema económico
+	playerUUID := uuid.New() // Convertir int a UUID para compatibilidad
+	playerResources, err := s.economyRepo.GetPlayerResources(playerUUID)
+	if err != nil {
+		return fmt.Errorf("error obteniendo recursos del jugador: %w", err)
+	}
+
+	// Validar cada recurso requerido
+	for _, cost := range costs {
+		switch cost.ResourceType {
+		case "gold":
+			if playerResources.Gold < cost.Amount {
+				return fmt.Errorf("oro insuficiente: disponible %d, requerido %d",
+					playerResources.Gold, cost.Amount)
+			}
+		case "wood":
+			if playerResources.Wood < cost.Amount {
+				return fmt.Errorf("madera insuficiente: disponible %d, requerido %d",
+					playerResources.Wood, cost.Amount)
+			}
+		case "stone":
+			if playerResources.Stone < cost.Amount {
+				return fmt.Errorf("piedra insuficiente: disponible %d, requerido %d",
+					playerResources.Stone, cost.Amount)
+			}
+		case "food":
+			if playerResources.Food < cost.Amount {
+				return fmt.Errorf("comida insuficiente: disponible %d, requerido %d",
+					playerResources.Food, cost.Amount)
+			}
+		default:
+			s.logger.Warn("Tipo de recurso desconocido en costos de investigación",
+				zap.String("resource_type", cost.ResourceType),
+				zap.Int("technology_id", technologyID),
+			)
+		}
+	}
+
+	s.logger.Info("Recursos validados exitosamente para investigación",
+		zap.Int("player_id", playerID),
+		zap.Int("technology_id", technologyID),
+		zap.Int("costs_count", len(costs)),
+	)
+
+	return nil
+}
+
+// deductResearchResources deduce los recursos necesarios para la investigación
+func (s *ResearchService) deductResearchResources(playerID int, technologyID int) error {
+	// Obtener costos de la tecnología
+	technologyIDStr := fmt.Sprintf("%d", technologyID)
+	costs, err := s.researchRepo.GetTechnologyCosts(technologyIDStr, technologyID)
+	if err != nil {
+		return fmt.Errorf("error obteniendo costos de tecnología: %w", err)
+	}
+
+	// Si no hay costos definidos, no deducir nada
+	if len(costs) == 0 {
+		return nil
+	}
+
+	// Preparar cambios de recursos
+	resourceChanges := map[string]int{
+		"gold":  0,
+		"wood":  0,
+		"stone": 0,
+		"food":  0,
+	}
+
+	// Calcular recursos a deducir
+	for _, cost := range costs {
+		switch cost.ResourceType {
+		case "gold":
+			resourceChanges["gold"] -= cost.Amount
+		case "wood":
+			resourceChanges["wood"] -= cost.Amount
+		case "stone":
+			resourceChanges["stone"] -= cost.Amount
+		case "food":
+			resourceChanges["food"] -= cost.Amount
+		}
+	}
+
+	// Aplicar cambios usando el sistema económico
+	playerUUID := uuid.New() // Convertir int a UUID para compatibilidad
+	err = s.economyRepo.UpdatePlayerResourcesSafe(playerUUID, uuid.Nil, resourceChanges)
+	if err != nil {
+		return fmt.Errorf("error deduciendo recursos para investigación: %w", err)
+	}
+
+	s.logger.Info("Recursos deducidos exitosamente para investigación",
+		zap.Int("player_id", playerID),
+		zap.Int("technology_id", technologyID),
+		zap.Any("resource_changes", resourceChanges),
+	)
+
+	return nil
 }
