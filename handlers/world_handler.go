@@ -67,8 +67,47 @@ func (h *WorldHandler) GetWorld(w http.ResponseWriter, r *http.Request) {
 
 // AssignToWorld asigna automáticamente al jugador al mundo menos poblado
 func (h *WorldHandler) AssignToWorld(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implementar asignación automática
-	http.Error(w, "Asignación automática no implementada", http.StatusNotImplemented)
+	// Obtener el ID del jugador del contexto
+	playerIDStr := r.Context().Value("player_id").(string)
+	playerID, err := uuid.Parse(playerIDStr)
+	if err != nil {
+		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
+		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		return
+	}
+
+	// Decodificar datos de la solicitud (opcional)
+	var requestData struct {
+		VillageName string `json:"villageName"`
+	}
+	
+	// Si no se proporciona nombre de aldea, usar uno por defecto
+	villageName := "Mi Aldea"
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err == nil && requestData.VillageName != "" {
+			villageName = requestData.VillageName
+		}
+	}
+
+	// Asignar automáticamente al jugador al mejor mundo disponible
+	response, err := h.worldService.AssignToWorld(playerID, villageName)
+	if err != nil {
+		switch err {
+		case services.ErrNoWorldsAvailable:
+			http.Error(w, "No hay mundos disponibles para asignación automática", http.StatusServiceUnavailable)
+		case services.ErrPlayerAlreadyInWorld:
+			http.Error(w, "Ya tienes una aldea en un mundo", http.StatusConflict)
+		default:
+			h.logger.Error("Error asignando jugador automáticamente", zap.Error(err))
+			http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Responder con éxito
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(response)
 }
 
 // JoinWorld permite al jugador unirse a un mundo específico

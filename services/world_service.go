@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"fmt"
 	"server-backend/models"
 	"server-backend/repository"
 	"time"
@@ -297,6 +298,50 @@ func (s *WorldService) GetWorldStatus(worldID uuid.UUID) (*models.WorldStatusRes
 	}
 
 	return status, nil
+}
+
+// AssignToWorld maneja la asignación automática del jugador al mejor mundo disponible
+func (s *WorldService) AssignToWorld(playerID uuid.UUID, villageName string) (*models.WorldJoinResponse, error) {
+	// Verificar que el jugador no esté ya en un mundo
+	currentWorld, err := s.worldRepo.GetPlayerCurrentWorld(playerID)
+	if err != nil {
+		return nil, fmt.Errorf("error verificando mundo actual del jugador: %w", err)
+	}
+
+	if currentWorld != nil {
+		return nil, ErrPlayerAlreadyInWorld
+	}
+
+	// Encontrar el mejor mundo disponible
+	bestWorld, err := s.worldRepo.GetBestWorldForAssignment()
+	if err != nil {
+		return nil, fmt.Errorf("error encontrando mejor mundo: %w", err)
+	}
+
+	if bestWorld == nil {
+		return nil, ErrNoWorldsAvailable
+	}
+
+	// Usar la lógica existente de JoinWorld para asignar al jugador
+	response, err := s.JoinWorld(playerID, bestWorld.ID, villageName, "auto")
+	if err != nil {
+		return nil, fmt.Errorf("error asignando jugador al mundo: %w", err)
+	}
+
+	// Agregar información adicional sobre la asignación automática
+	response.Message = "Has sido asignado automáticamente al mundo " + bestWorld.Name
+	response.AutoAssigned = true
+	response.AssignedWorldName = bestWorld.Name
+
+	s.logger.Info("Jugador asignado automáticamente a mundo",
+		zap.String("player_id", playerID.String()),
+		zap.String("world_id", bestWorld.ID.String()),
+		zap.String("world_name", bestWorld.Name),
+		zap.Int("current_players", bestWorld.CurrentPlayers),
+		zap.Int("max_players", bestWorld.MaxPlayers),
+	)
+
+	return response, nil
 }
 
 // convertToClientResponse convierte un World a WorldClientResponse
