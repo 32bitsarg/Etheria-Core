@@ -9,7 +9,9 @@ import (
 
 	"server-backend/services"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
@@ -38,8 +40,15 @@ func (h *ChatHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Obtener datos del usuario desde el contexto
-	playerID := r.Context().Value("player_id").(int64)
+	playerIDStr := r.Context().Value("player_id").(string)
 	username := r.Context().Value("username").(string)
+
+	// Convertir playerID de string a UUID
+	playerID, err := uuid.Parse(playerIDStr)
+	if err != nil {
+		http.Error(w, "ID de jugador inválido", http.StatusBadRequest)
+		return
+	}
 
 	// Validar request
 	if req.Channel == "" {
@@ -59,7 +68,7 @@ func (h *ChatHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enviar mensaje
-	err := h.chatService.SendMessage(r.Context(), playerID, username, req.Channel, req.Message)
+	err = h.chatService.SendMessage(r.Context(), playerID, username, req.Channel, req.Message)
 	if err != nil {
 		h.logger.Error("Error enviando mensaje", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -68,8 +77,10 @@ func (h *ChatHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": "Mensaje enviado",
+		"success":  true,
+		"message":  "Mensaje enviado",
+		"username": username, // ← AGREGADO: Incluir username en respuesta
+		"channel":  req.Channel,
 	})
 }
 
@@ -116,8 +127,15 @@ func (h *ChatHandler) JoinChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Obtener datos del usuario
-	playerID := r.Context().Value("player_id").(int64)
+	playerIDStr := r.Context().Value("player_id").(string)
 	username := r.Context().Value("username").(string)
+
+	// Convertir playerID de string a UUID
+	playerID, err := uuid.Parse(playerIDStr)
+	if err != nil {
+		http.Error(w, "ID de jugador inválido", http.StatusBadRequest)
+		return
+	}
 
 	// Verificar si el usuario está baneado
 	if h.chatService.IsUserBanned(r.Context(), username, req.Channel) {
@@ -126,7 +144,7 @@ func (h *ChatHandler) JoinChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Unirse al canal
-	err := h.chatService.JoinChannel(r.Context(), playerID, username, req.Channel)
+	err = h.chatService.JoinChannel(r.Context(), playerID, username, req.Channel)
 	if err != nil {
 		h.logger.Error("Error uniéndose al canal", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -152,11 +170,18 @@ func (h *ChatHandler) LeaveChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Obtener datos del usuario
-	playerID := r.Context().Value("player_id").(int64)
+	playerIDStr := r.Context().Value("player_id").(string)
 	username := r.Context().Value("username").(string)
 
+	// Convertir playerID de string a UUID
+	playerID, err := uuid.Parse(playerIDStr)
+	if err != nil {
+		http.Error(w, "ID de jugador inválido", http.StatusBadRequest)
+		return
+	}
+
 	// Salir del canal
-	err := h.chatService.LeaveChannel(r.Context(), playerID, username, req.Channel)
+	err = h.chatService.LeaveChannel(r.Context(), playerID, username, req.Channel)
 	if err != nil {
 		h.logger.Error("Error saliendo del canal", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -327,33 +352,45 @@ func (h *ChatHandler) SendSystemMessage(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// GetChannels obtiene todos los canales disponibles
+// GetChannels obtiene todos los canales disponibles desde BD
 func (h *ChatHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
-	// Por ahora, retornamos canales predefinidos
-	// En el futuro, esto podría obtener canales dinámicos desde Redis
-	channels := []map[string]interface{}{
-		{
-			"id":           "global",
-			"name":         "Chat Global",
-			"type":         "global",
-			"member_count": 0,
-			"is_active":    true,
-		},
-		{
-			"id":           "alliance:1",
-			"name":         "Alianza Ejemplo",
-			"type":         "alliance",
-			"alliance_id":  "1",
-			"member_count": 0,
-			"is_active":    true,
-		},
+	// Obtener canales desde el servicio (que los obtiene de BD)
+	channels, err := h.chatService.GetAllChannels(r.Context())
+	if err != nil {
+		h.logger.Error("Error obteniendo canales", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Convertir a formato de respuesta
+	var responseChannels []map[string]interface{}
+	for _, channel := range channels {
+		channelData := map[string]interface{}{
+			"id":           channel.ID,
+			"name":         channel.Name,
+			"type":         channel.Type,
+			"member_count": channel.MemberCount,
+			"is_active":    channel.IsActive,
+			"created_at":   channel.CreatedAt,
+		}
+
+		// Agregar campos específicos según el tipo
+		if channel.WorldID != "" {
+			channelData["world_id"] = channel.WorldID
+		}
+
+		if channel.Type == "alliance" && channel.AllianceID != "" {
+			channelData["alliance_id"] = channel.AllianceID
+		}
+
+		responseChannels = append(responseChannels, channelData)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":  true,
-		"channels": channels,
-		"count":    len(channels),
+		"channels": responseChannels,
+		"count":    len(responseChannels),
 	})
 }
 
@@ -367,8 +404,15 @@ func (h *ChatHandler) WebSocketChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Obtener datos del usuario
-	playerID := r.Context().Value("player_id").(int64)
+	playerIDStr := r.Context().Value("player_id").(string)
 	username := r.Context().Value("username").(string)
+
+	// Convertir playerID de string a UUID
+	playerID, err := uuid.Parse(playerIDStr)
+	if err != nil {
+		http.Error(w, "ID de jugador inválido", http.StatusBadRequest)
+		return
+	}
 
 	// Verificar si el usuario está baneado
 	if h.chatService.IsUserBanned(r.Context(), username, channel) {
@@ -377,7 +421,7 @@ func (h *ChatHandler) WebSocketChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Unirse al canal
-	err := h.chatService.JoinChannel(r.Context(), playerID, username, channel)
+	err = h.chatService.JoinChannel(r.Context(), playerID, username, channel)
 	if err != nil {
 		h.logger.Error("Error uniéndose al canal", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -388,10 +432,19 @@ func (h *ChatHandler) WebSocketChat(w http.ResponseWriter, r *http.Request) {
 	pubsub, err := h.chatService.SubscribeToChannel(r.Context(), channel)
 	if err != nil {
 		h.logger.Error("Error suscribiéndose al canal", zap.Error(err))
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		// Si Redis no está disponible, continuar sin suscripción
+		if err.Error() == "Redis no disponible - suscripción no disponible" {
+			h.logger.Warn("Redis no disponible - WebSocket funcionará sin tiempo real")
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
-	defer pubsub.Close()
+	defer func() {
+		if pubsub != nil {
+			pubsub.Close()
+		}
+	}()
 
 	// Configurar WebSocket
 	upgrader := websocket.Upgrader{
@@ -407,19 +460,22 @@ func (h *ChatHandler) WebSocketChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Canal para mensajes de Redis
-	redisChan := pubsub.Channel()
+	// Canal para mensajes de Redis (solo si Redis está disponible)
+	var redisChan <-chan *redis.Message
+	if pubsub != nil {
+		redisChan = pubsub.Channel()
 
-	// Goroutine para enviar mensajes de Redis al WebSocket
-	go func() {
-		for msg := range redisChan {
-			err := conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
-			if err != nil {
-				h.logger.Error("Error enviando mensaje WebSocket", zap.Error(err))
-				break
+		// Goroutine para enviar mensajes de Redis al WebSocket
+		go func() {
+			for msg := range redisChan {
+				err := conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
+				if err != nil {
+					h.logger.Error("Error enviando mensaje WebSocket", zap.Error(err))
+					break
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Leer mensajes del WebSocket y enviarlos a Redis
 	for {

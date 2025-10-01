@@ -58,6 +58,11 @@ func (r *RedisService) Close() error {
 	return r.client.Close()
 }
 
+// GetClient obtiene el cliente de Redis (para uso interno del paquete sync)
+func (r *RedisService) GetClient() *redis.Client {
+	return r.client
+}
+
 // ========================================
 // SISTEMA DE SESIONES DE USUARIO
 // ========================================

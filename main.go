@@ -98,7 +98,7 @@ func main() {
 	constructionService := services.NewConstructionService(villageRepo, buildingConfigRepo, redisService, logger, cfg.TimeZone)
 	gameMechanicsService := services.NewGameMechanicsService(villageRepo, playerRepo, logger)
 	battleService := services.NewBattleService(battleRepo, villageRepo, unitRepo, logger, redisService)
-	chatService := services.NewChatService(chatRepo, redisService)
+	chatService := services.NewChatService(chatRepo, redisService, logger)
 	rankingService := services.NewRankingService(rankingRepo, redisService)
 	worldService := services.NewWorldService(worldRepo, playerRepo, villageRepo, allianceRepo, battleRepo, economyRepo, logger)
 	economyService := services.NewEconomyService(economyRepo, playerRepo, villageRepo, nil, logger)
@@ -266,6 +266,8 @@ func main() {
 
 		// Rutas de chat con Redis Pub/Sub
 		r.Route("/chat", func(r chi.Router) {
+			r.Use(authMiddleware.RequireAuth)
+
 			// Canales
 			r.Get("/channels", chatHandler.GetChannels)
 			r.Post("/channels/alliance", chatHandler.CreateAllianceChannel)
@@ -886,6 +888,24 @@ func main() {
 		logger.Error("Error inicializando canales por defecto", zap.Error(err))
 	}
 
+	// Iniciar el gestor de sincronización robusto
+	if redisService != nil {
+		go func() {
+			// Esperar un poco para que Redis esté completamente listo
+			time.Sleep(2 * time.Second)
+
+			// Crear contexto con timeout para la inicialización
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			if err := chatService.StartSyncManager(ctx); err != nil {
+				logger.Error("Error iniciando gestor de sincronización", zap.Error(err))
+			} else {
+				logger.Info("Gestor de sincronización iniciado exitosamente")
+			}
+		}()
+	}
+
 	// Iniciar servicio de generación de recursos en background
 	go resourceService.StartResourceGeneration()
 
@@ -922,7 +942,7 @@ func main() {
 
 	// Configurar servidor HTTP
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
+		Addr:         fmt.Sprintf("0.0.0.0:%d", cfg.Server.Port), // ← CAMBIADO: De ":%d" a "0.0.0.0:%d"
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
@@ -944,6 +964,15 @@ func main() {
 	// Esperar señal de terminación
 	<-stop
 	logger.Info("Cerrando servidor...")
+
+	// Detener el gestor de sincronización
+	if redisService != nil {
+		if err := chatService.StopSyncManager(); err != nil {
+			logger.Error("Error deteniendo gestor de sincronización", zap.Error(err))
+		} else {
+			logger.Info("Gestor de sincronización detenido exitosamente")
+		}
+	}
 
 	// Dar tiempo para que las conexiones se cierren
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

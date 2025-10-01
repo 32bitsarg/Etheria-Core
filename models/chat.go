@@ -23,6 +23,7 @@ type ChatChannel struct {
 	Type        string     `json:"type"` // "global", "world", "alliance", "private"
 	WorldID     *uuid.UUID `json:"world_id,omitempty"`
 	IsActive    bool       `json:"is_active"`
+	MaxMembers  int        `json:"max_members"`
 	CreatedAt   time.Time  `json:"created_at"`
 }
 

@@ -10,19 +10,23 @@ import (
 
 	"server-backend/models"
 	"server-backend/repository"
+	"server-backend/sync"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 type ChatService struct {
 	chatRepo     *repository.ChatRepository
 	redisService *RedisService
+	syncManager  sync.SyncManager
+	logger       *zap.Logger
 }
 
 type ChatMessage struct {
 	ID        string                 `json:"id"`
-	PlayerID  int64                  `json:"player_id"`
+	PlayerID  uuid.UUID              `json:"player_id"`
 	Username  string                 `json:"username"`
 	Channel   string                 `json:"channel"` // "global", "alliance:{id}", "private"
 	Message   string                 `json:"message"`
@@ -35,6 +39,7 @@ type ChatChannel struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Type        string    `json:"type"` // "global", "alliance", "private"
+	WorldID     string    `json:"world_id,omitempty"`
 	AllianceID  string    `json:"alliance_id,omitempty"`
 	MemberCount int       `json:"member_count"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -50,15 +55,195 @@ type ChatStats struct {
 	GlobalChats     int64 `json:"global_chats"`
 }
 
-func NewChatService(chatRepo *repository.ChatRepository, redisService *RedisService) *ChatService {
+// NewChatService crea una nueva instancia del servicio de chat
+func NewChatService(chatRepo *repository.ChatRepository, redisService *RedisService, logger *zap.Logger) *ChatService {
+	// Crear adaptadores para el paquete sync
+	chatRepoAdapter := &ChatRepositoryAdapter{chatRepo: chatRepo}
+	redisClientAdapter := &RedisClientAdapter{redisService: redisService}
+
+	// Crear SyncManager completo usando el paquete sync
+	syncManager := sync.NewSyncManager(chatRepoAdapter, redisClientAdapter, logger, nil)
+
 	return &ChatService{
 		chatRepo:     chatRepo,
 		redisService: redisService,
+		syncManager:  syncManager,
+		logger:       logger,
 	}
 }
 
+// ChatRepositoryAdapter adaptador para el repositorio de chat
+type ChatRepositoryAdapter struct {
+	chatRepo *repository.ChatRepository
+}
+
+func (a *ChatRepositoryAdapter) GetAllChannels() ([]*sync.ChatChannel, error) {
+	channels, err := a.chatRepo.GetAllChannels()
+	if err != nil {
+		return nil, err
+	}
+
+	var syncChannels []*sync.ChatChannel
+	for _, channel := range channels {
+		syncChannel := &sync.ChatChannel{
+			ID:          channel.ID.String(),
+			Name:        channel.Name,
+			Type:        channel.Type,
+			MemberCount: 0, // Se calculará dinámicamente
+			CreatedAt:   channel.CreatedAt,
+			IsActive:    channel.IsActive,
+		}
+
+		if channel.WorldID != nil {
+			worldIDStr := channel.WorldID.String()
+			syncChannel.WorldID = &worldIDStr
+		}
+
+		// No hay AllianceID en models.ChatChannel, se puede agregar después
+		syncChannels = append(syncChannels, syncChannel)
+	}
+
+	return syncChannels, nil
+}
+
+func (a *ChatRepositoryAdapter) GetChannelByID(channelID string) (*sync.ChatChannel, error) {
+	channel, err := a.chatRepo.GetChannelByID(channelID)
+	if err != nil {
+		return nil, err
+	}
+
+	syncChannel := &sync.ChatChannel{
+		ID:          channel.ID.String(),
+		Name:        channel.Name,
+		Type:        channel.Type,
+		MemberCount: 0,
+		CreatedAt:   channel.CreatedAt,
+		IsActive:    channel.IsActive,
+	}
+
+	if channel.WorldID != nil {
+		worldIDStr := channel.WorldID.String()
+		syncChannel.WorldID = &worldIDStr
+	}
+
+	return syncChannel, nil
+}
+
+func (a *ChatRepositoryAdapter) GetChannelByName(name string) (*sync.ChatChannel, error) {
+	channel, err := a.chatRepo.GetChannelByName(name)
+	if err != nil {
+		return nil, err
+	}
+
+	syncChannel := &sync.ChatChannel{
+		ID:          channel.ID.String(),
+		Name:        channel.Name,
+		Type:        channel.Type,
+		MemberCount: 0,
+		CreatedAt:   channel.CreatedAt,
+		IsActive:    channel.IsActive,
+	}
+
+	if channel.WorldID != nil {
+		worldIDStr := channel.WorldID.String()
+		syncChannel.WorldID = &worldIDStr
+	}
+
+	return syncChannel, nil
+}
+
+func (a *ChatRepositoryAdapter) CreateChannel(channel *sync.ChatChannel) error {
+	// Convertir sync.ChatChannel a models.ChatChannel
+	modelChannel := &models.ChatChannel{
+		Name:      channel.Name,
+		Type:      channel.Type,
+		CreatedAt: channel.CreatedAt,
+		IsActive:  channel.IsActive,
+	}
+
+	if channel.WorldID != nil {
+		worldID, err := uuid.Parse(*channel.WorldID)
+		if err != nil {
+			return err
+		}
+		modelChannel.WorldID = &worldID
+	}
+
+	return a.chatRepo.CreateChannel(modelChannel)
+}
+
+func (a *ChatRepositoryAdapter) UpdateChannel(channel *sync.ChatChannel) error {
+	// Convertir sync.ChatChannel a models.ChatChannel
+	modelChannel := &models.ChatChannel{
+		Name:      channel.Name,
+		Type:      channel.Type,
+		CreatedAt: channel.CreatedAt,
+		IsActive:  channel.IsActive,
+	}
+
+	if channel.WorldID != nil {
+		worldID, err := uuid.Parse(*channel.WorldID)
+		if err != nil {
+			return err
+		}
+		modelChannel.WorldID = &worldID
+	}
+
+	return a.chatRepo.UpdateChannel(modelChannel)
+}
+
+func (a *ChatRepositoryAdapter) DeleteChannel(channelID string) error {
+	return a.chatRepo.DeleteChannel(channelID)
+}
+
+// RedisClientAdapter adaptador para el cliente de Redis
+type RedisClientAdapter struct {
+	redisService *RedisService
+}
+
+func (a *RedisClientAdapter) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
+	return a.redisService.GetClient().Set(ctx, key, value, expiration)
+}
+
+func (a *RedisClientAdapter) Get(ctx context.Context, key string) *redis.StringCmd {
+	return a.redisService.GetClient().Get(ctx, key)
+}
+
+func (a *RedisClientAdapter) Pipeline() redis.Pipeliner {
+	return a.redisService.GetClient().Pipeline()
+}
+
+func (a *RedisClientAdapter) Close() error {
+	return a.redisService.Close()
+}
+
+// StartSyncManager inicia el gestor de sincronización
+func (s *ChatService) StartSyncManager(ctx context.Context) error {
+	return s.syncManager.Start(ctx)
+}
+
+// StopSyncManager detiene el gestor de sincronización
+func (s *ChatService) StopSyncManager() error {
+	return s.syncManager.Stop()
+}
+
+// GetSyncStatus obtiene el estado del gestor de sincronización
+func (s *ChatService) GetSyncStatus() sync.SyncStatus {
+	return s.syncManager.GetStatus()
+}
+
+// GetSyncMetrics obtiene las métricas del gestor de sincronización
+func (s *ChatService) GetSyncMetrics() sync.SyncMetrics {
+	return s.syncManager.GetMetrics()
+}
+
+// IsSyncHealthy verifica si el gestor de sincronización está saludable
+func (s *ChatService) IsSyncHealthy() bool {
+	return s.syncManager.IsHealthy()
+}
+
 // SendMessage envía un mensaje y lo almacena en Redis para tiempo real
-func (s *ChatService) SendMessage(ctx context.Context, playerID int64, username, channel, message string) error {
+func (s *ChatService) SendMessage(ctx context.Context, playerID uuid.UUID, username, channel, message string) error {
 	// Validar mensaje
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("mensaje no puede estar vacío")
@@ -66,6 +251,12 @@ func (s *ChatService) SendMessage(ctx context.Context, playerID int64, username,
 
 	if len(message) > 500 {
 		return fmt.Errorf("mensaje demasiado largo (máximo 500 caracteres)")
+	}
+
+	// Si Redis no está disponible, solo guardar en base de datos
+	if s.redisService == nil {
+		log.Printf("Redis no disponible - guardando mensaje solo en base de datos")
+		return s.saveMessageToDatabase(ctx, playerID, username, channel, message)
 	}
 
 	// Verificar si el usuario está en el canal
@@ -85,16 +276,22 @@ func (s *ChatService) SendMessage(ctx context.Context, playerID int64, username,
 	}
 
 	// Guardar en base de datos
+	// Buscar el canal en la base de datos (case insensitive)
+	channelInfo, err := s.chatRepo.GetChannelByName(channel)
+	if err != nil {
+		return fmt.Errorf("canal '%s' no encontrado: %v", channel, err)
+	}
+
 	dbMessage := &models.ChatMessage{
-		PlayerID:  uuid.New(), // Convertir playerID a UUID
-		ChannelID: uuid.New(), // Crear channelID temporal
+		PlayerID:  playerID,       // Usar el playerID real
+		ChannelID: channelInfo.ID, // Usar el ID real del canal
 		Username:  username,
 		Message:   message,
 		Type:      "text",
 		CreatedAt: time.Now(),
 	}
 
-	err := s.chatRepo.SaveMessage(dbMessage)
+	err = s.chatRepo.SaveMessage(dbMessage)
 	if err != nil {
 		return fmt.Errorf("error guardando mensaje en BD: %v", err)
 	}
@@ -121,7 +318,7 @@ func (s *ChatService) SendMessage(ctx context.Context, playerID int64, username,
 func (s *ChatService) SendSystemMessage(ctx context.Context, channel, message string) error {
 	systemMsg := &ChatMessage{
 		ID:        fmt.Sprintf("system_%d", time.Now().UnixNano()),
-		PlayerID:  0,
+		PlayerID:  uuid.Nil, // UUID cero para mensajes del sistema
 		Username:  "Sistema",
 		Channel:   channel,
 		Message:   message,
@@ -192,6 +389,12 @@ func (s *ChatService) GetRecentMessages(ctx context.Context, channel string, lim
 		limit = 100
 	}
 
+	// Validar que Redis esté disponible
+	if s.redisService == nil {
+		log.Printf("Redis no disponible - retornando mensajes vacíos para canal: %s", channel)
+		return []*ChatMessage{}, nil
+	}
+
 	recentKey := fmt.Sprintf("chat:recent:%s", channel)
 
 	// Obtener mensajes desde Redis
@@ -216,6 +419,11 @@ func (s *ChatService) GetRecentMessages(ctx context.Context, channel string, lim
 
 // SubscribeToChannel suscribe a un canal de chat
 func (s *ChatService) SubscribeToChannel(ctx context.Context, channel string) (*redis.PubSub, error) {
+	// Validar que Redis esté disponible
+	if s.redisService == nil {
+		return nil, fmt.Errorf("Redis no disponible - suscripción no disponible")
+	}
+
 	channelKey := fmt.Sprintf("chat:%s", channel)
 	pubsub := s.redisService.client.Subscribe(ctx, channelKey)
 
@@ -230,6 +438,12 @@ func (s *ChatService) SubscribeToChannel(ctx context.Context, channel string) (*
 
 // GetOnlineUsers obtiene usuarios online en un canal
 func (s *ChatService) GetOnlineUsers(ctx context.Context, channel string) ([]string, error) {
+	// Validar que Redis esté disponible
+	if s.redisService == nil {
+		log.Printf("Redis no disponible - retornando lista vacía de usuarios online")
+		return []string{}, nil
+	}
+
 	onlineKey := fmt.Sprintf("chat:online:%s", channel)
 
 	users, err := s.redisService.client.SMembers(ctx, onlineKey).Result()
@@ -241,7 +455,13 @@ func (s *ChatService) GetOnlineUsers(ctx context.Context, channel string) ([]str
 }
 
 // JoinChannel marca a un usuario como online en un canal
-func (s *ChatService) JoinChannel(ctx context.Context, playerID int64, username, channel string) error {
+func (s *ChatService) JoinChannel(ctx context.Context, playerID uuid.UUID, username, channel string) error {
+	// Si Redis no está disponible, solo loggear la acción
+	if s.redisService == nil {
+		log.Printf("Usuario %s se unió al canal %s (Redis no disponible)", username, channel)
+		return nil
+	}
+
 	onlineKey := fmt.Sprintf("chat:online:%s", channel)
 
 	// Agregar usuario al set de online
@@ -274,7 +494,13 @@ func (s *ChatService) JoinChannel(ctx context.Context, playerID int64, username,
 }
 
 // LeaveChannel marca a un usuario como offline en un canal
-func (s *ChatService) LeaveChannel(ctx context.Context, playerID int64, username, channel string) error {
+func (s *ChatService) LeaveChannel(ctx context.Context, playerID uuid.UUID, username, channel string) error {
+	// Si Redis no está disponible, solo loggear la acción
+	if s.redisService == nil {
+		log.Printf("Usuario %s abandonó el canal %s (Redis no disponible)", username, channel)
+		return nil
+	}
+
 	onlineKey := fmt.Sprintf("chat:online:%s", channel)
 
 	// Remover usuario del set de online
@@ -342,50 +568,137 @@ func (s *ChatService) CreateAllianceChannel(ctx context.Context, allianceID, all
 	return s.SendSystemMessage(ctx, channelID, "Canal de alianza creado")
 }
 
-// GetChannelInfo obtiene información de un canal
-func (s *ChatService) GetChannelInfo(ctx context.Context, channel string) (*ChatChannel, error) {
-	key := fmt.Sprintf("chat:channel:%s", channel)
+// SyncChannelsToRedis sincroniza todos los canales de BD a Redis usando el nuevo SyncManager
+func (s *ChatService) SyncChannelsToRedis(ctx context.Context) error {
+	return s.syncManager.SyncAll(ctx)
+}
 
-	data, err := s.redisService.client.Get(ctx, key).Result()
+// syncChannelToRedis sincroniza un canal específico a Redis usando el nuevo SyncManager
+func (s *ChatService) syncChannelToRedis(ctx context.Context, channel *models.ChatChannel) error {
+	return s.syncManager.SyncChannel(ctx, channel.ID.String())
+}
+
+// GetAllChannels obtiene todos los canales desde BD y los sincroniza con Redis
+func (s *ChatService) GetAllChannels(ctx context.Context) ([]*ChatChannel, error) {
+	// Obtener canales de BD
+	dbChannels, err := s.chatRepo.GetAllChannels()
 	if err != nil {
-		// Si no existe, crear canal global por defecto
-		if channel == "global" {
-			return &ChatChannel{
-				ID:          "global",
-				Name:        "Chat Global",
-				Type:        "global",
-				MemberCount: 0,
-				CreatedAt:   time.Now(),
-				IsActive:    true,
-			}, nil
+		return nil, fmt.Errorf("error obteniendo canales de BD: %v", err)
+	}
+
+	// Convertir a estructura de Redis
+	var channels []*ChatChannel
+	for _, dbChannel := range dbChannels {
+		redisChannel := &ChatChannel{
+			ID:          dbChannel.ID.String(),
+			Name:        dbChannel.Name,
+			Type:        dbChannel.Type,
+			MemberCount: 0, // Se calculará dinámicamente
+			CreatedAt:   dbChannel.CreatedAt,
+			IsActive:    dbChannel.IsActive,
 		}
-		return nil, fmt.Errorf("canal no encontrado")
+
+		if dbChannel.WorldID != nil {
+			redisChannel.WorldID = dbChannel.WorldID.String()
+		}
+
+		if dbChannel.Type == "alliance" {
+			redisChannel.AllianceID = "1" // Por ahora
+		}
+
+		channels = append(channels, redisChannel)
 	}
 
-	var channelInfo ChatChannel
-	err = json.Unmarshal([]byte(data), &channelInfo)
+	// Sincronizar a Redis si está disponible usando el nuevo SyncManager
+	if s.syncManager != nil {
+		go func() {
+			if err := s.syncManager.SyncAll(ctx); err != nil {
+				s.logger.Error("Error en sincronización automática", zap.Error(err))
+			}
+		}()
+	}
+
+	return channels, nil
+}
+
+// GetChannelInfo obtiene información de un canal desde BD o Redis
+func (s *ChatService) GetChannelInfo(ctx context.Context, channel string) (*ChatChannel, error) {
+	// Primero intentar obtener desde Redis
+	if s.redisService != nil {
+		key := fmt.Sprintf("chat:channel:%s", channel)
+		data, err := s.redisService.client.Get(ctx, key).Result()
+		if err == nil {
+			var channelInfo ChatChannel
+			err = json.Unmarshal([]byte(data), &channelInfo)
+			if err == nil {
+				return &channelInfo, nil
+			}
+		}
+	}
+
+	// Si no está en Redis o Redis no está disponible, obtener desde BD
+	dbChannel, err := s.chatRepo.GetChannelByID(channel)
 	if err != nil {
-		return nil, fmt.Errorf("error deserializando canal: %v", err)
+		// Intentar por nombre si no se encuentra por ID
+		dbChannel, err = s.chatRepo.GetChannelByName(channel)
+		if err != nil {
+			return nil, fmt.Errorf("canal no encontrado: %s", channel)
+		}
 	}
 
-	return &channelInfo, nil
+	// Convertir a estructura de Redis
+	redisChannel := &ChatChannel{
+		ID:          dbChannel.ID.String(),
+		Name:        dbChannel.Name,
+		Type:        dbChannel.Type,
+		MemberCount: 0,
+		CreatedAt:   dbChannel.CreatedAt,
+		IsActive:    dbChannel.IsActive,
+	}
+
+	if dbChannel.WorldID != nil {
+		redisChannel.WorldID = dbChannel.WorldID.String()
+	}
+
+	if dbChannel.Type == "alliance" {
+		redisChannel.AllianceID = "1"
+	}
+
+	// Sincronizar a Redis si está disponible usando el nuevo SyncManager
+	if s.syncManager != nil {
+		go func() {
+			if err := s.syncManager.SyncChannel(ctx, dbChannel.ID.String()); err != nil {
+				s.logger.Error("Error en sincronización automática de canal",
+					zap.String("channel_id", dbChannel.ID.String()),
+					zap.Error(err))
+			}
+		}()
+	}
+
+	return redisChannel, nil
 }
 
 // GetChatStats obtiene estadísticas del chat
 func (s *ChatService) GetChatStats(ctx context.Context) (*ChatStats, error) {
 	stats := &ChatStats{}
 
+	// Si Redis no está disponible, retornar estadísticas vacías
+	if s.redisService == nil {
+		log.Printf("Redis no disponible - retornando estadísticas vacías")
+		return stats, nil
+	}
+
 	// Contar mensajes totales (aproximado)
-	keys, err := s.redisService.client.Keys(ctx, "chat:recent:*").Result()
+	keys, err := s.redisService.GetClient().Keys(ctx, "chat:recent:*").Result()
 	if err == nil {
 		stats.ChannelsCount = int64(len(keys))
 	}
 
 	// Contar usuarios activos
-	onlineKeys, err := s.redisService.client.Keys(ctx, "chat:online:*").Result()
+	onlineKeys, err := s.redisService.GetClient().Keys(ctx, "chat:online:*").Result()
 	if err == nil {
 		for _, key := range onlineKeys {
-			count, _ := s.redisService.client.SCard(ctx, key).Result()
+			count, _ := s.redisService.GetClient().SCard(ctx, key).Result()
 			stats.ActiveUsers += count
 		}
 	}
@@ -423,6 +736,12 @@ func (s *ChatService) CleanupInactiveUsers(ctx context.Context) error {
 
 // BanUser banea a un usuario de un canal
 func (s *ChatService) BanUser(ctx context.Context, username, channel string, duration time.Duration) error {
+	// Si Redis no está disponible, solo loggear la acción
+	if s.redisService == nil {
+		log.Printf("Usuario %s baneado del canal %s por %v (Redis no disponible)", username, channel, duration)
+		return nil
+	}
+
 	banKey := fmt.Sprintf("chat:banned:%s", channel)
 
 	// Agregar usuario a la lista de baneados
@@ -440,7 +759,7 @@ func (s *ChatService) BanUser(ctx context.Context, username, channel string, dur
 	}
 
 	// Remover del canal
-	s.LeaveChannel(ctx, 0, username, channel)
+	s.LeaveChannel(ctx, uuid.Nil, username, channel)
 
 	// Enviar mensaje de sistema
 	s.SendSystemMessage(ctx, channel, fmt.Sprintf("%s ha sido baneado del chat", username))
@@ -450,6 +769,11 @@ func (s *ChatService) BanUser(ctx context.Context, username, channel string, dur
 
 // IsUserBanned verifica si un usuario está baneado
 func (s *ChatService) IsUserBanned(ctx context.Context, username, channel string) bool {
+	// Si Redis no está disponible, no hay baneos
+	if s.redisService == nil {
+		return false
+	}
+
 	banKey := fmt.Sprintf("chat:banned:%s", channel)
 
 	isBanned, err := s.redisService.client.SIsMember(ctx, banKey, username).Result()
@@ -458,4 +782,31 @@ func (s *ChatService) IsUserBanned(ctx context.Context, username, channel string
 	}
 
 	return isBanned
+}
+
+// saveMessageToDatabase guarda un mensaje solo en la base de datos (fallback cuando Redis no está disponible)
+func (s *ChatService) saveMessageToDatabase(ctx context.Context, playerID uuid.UUID, username, channel, message string) error {
+	// Buscar el canal en la base de datos (case insensitive)
+	channelInfo, err := s.chatRepo.GetChannelByName(channel)
+	if err != nil {
+		return fmt.Errorf("canal '%s' no encontrado: %v", channel, err)
+	}
+
+	// Crear mensaje para la base de datos
+	dbMessage := &models.ChatMessage{
+		PlayerID:  playerID,       // Usar el playerID real
+		ChannelID: channelInfo.ID, // Usar el ID real del canal
+		Username:  username,
+		Message:   message,
+		Type:      "text",
+		CreatedAt: time.Now(),
+	}
+
+	err = s.chatRepo.SaveMessage(dbMessage)
+	if err != nil {
+		return fmt.Errorf("error guardando mensaje en BD: %v", err)
+	}
+
+	log.Printf("Mensaje guardado en base de datos: %s en canal %s (ID: %s)", username, channel, channelInfo.ID)
+	return nil
 }

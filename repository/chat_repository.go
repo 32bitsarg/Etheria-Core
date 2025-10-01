@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"fmt"
 	"server-backend/models"
 	"time"
 
@@ -19,18 +20,6 @@ func NewChatRepository(db *sql.DB, logger *zap.Logger) *ChatRepository {
 		db:     db,
 		logger: logger,
 	}
-}
-
-func (r *ChatRepository) CreateChannel(channel *models.ChatChannel) error {
-	channel.ID = uuid.New()
-	channel.CreatedAt = time.Now()
-
-	_, err := r.db.Exec(`
-		INSERT INTO chat_channels (id, name, description, type, world_id, is_active, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, channel.ID, channel.Name, channel.Description, channel.Type, channel.WorldID, channel.IsActive, channel.CreatedAt)
-
-	return err
 }
 
 func (r *ChatRepository) GetChannels() ([]*models.ChatChannel, error) {
@@ -63,30 +52,6 @@ func (r *ChatRepository) GetChannels() ([]*models.ChatChannel, error) {
 		channels = append(channels, &channel)
 	}
 	return channels, nil
-}
-
-func (r *ChatRepository) GetChannelByID(channelID uuid.UUID) (*models.ChatChannel, error) {
-	var channel models.ChatChannel
-	err := r.db.QueryRow(`
-		SELECT id, name, description, type, world_id, is_active, created_at
-		FROM chat_channels
-		WHERE id = $1
-	`, channelID).Scan(
-		&channel.ID,
-		&channel.Name,
-		&channel.Description,
-		&channel.Type,
-		&channel.WorldID,
-		&channel.IsActive,
-		&channel.CreatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &channel, nil
 }
 
 func (r *ChatRepository) SaveMessage(message *models.ChatMessage) error {
@@ -205,31 +170,212 @@ func (r *ChatRepository) IsChannelMember(channelID, playerID uuid.UUID) (bool, e
 }
 
 func (r *ChatRepository) InitializeDefaultChannels() error {
-	for _, channel := range models.DefaultChannels {
+	// Canales predefinidos con valores específicos
+	defaultChannels := []struct {
+		Name        string
+		Description string
+		Type        string
+		MaxMembers  int
+	}{
+		{
+			Name:        "Global",
+			Description: "Chat global para todos los jugadores",
+			Type:        "global",
+			MaxMembers:  10000,
+		},
+		{
+			Name:        "Ayuda",
+			Description: "Canal de ayuda para nuevos jugadores",
+			Type:        "help",
+			MaxMembers:  1000,
+		},
+		{
+			Name:        "Comercio",
+			Description: "Canal para intercambios y comercio",
+			Type:        "trade",
+			MaxMembers:  5000,
+		},
+	}
+
+	for _, channelData := range defaultChannels {
 		// Verificar si el canal ya existe
-		existingChannels, err := r.db.Query(`
-			SELECT id FROM chat_channels WHERE name = $1
-		`, channel.Name)
+		var exists bool
+		err := r.db.QueryRow(`
+			SELECT EXISTS(SELECT 1 FROM chat_channels WHERE name = $1)
+		`, channelData.Name).Scan(&exists)
+
 		if err != nil {
-			return err
+			return fmt.Errorf("error verificando canal %s: %v", channelData.Name, err)
 		}
 
-		if !existingChannels.Next() {
+		if !exists {
 			// Canal no existe, crearlo
-			channel.ID = uuid.New()
-			channel.CreatedAt = time.Now()
+			channelID := uuid.New()
+			createdAt := time.Now()
 
 			_, err = r.db.Exec(`
-				INSERT INTO chat_channels (id, name, description, type, world_id, is_active, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7)
-			`, channel.ID, channel.Name, channel.Description, channel.Type, channel.WorldID, channel.IsActive, channel.CreatedAt)
+				INSERT INTO chat_channels (id, name, description, type, world_id, is_active, max_members, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			`, channelID, channelData.Name, channelData.Description, channelData.Type, nil, true, channelData.MaxMembers, createdAt)
 
 			if err != nil {
-				return err
+				return fmt.Errorf("error creando canal %s: %v", channelData.Name, err)
 			}
+
+			r.logger.Info("Canal creado",
+				zap.String("name", channelData.Name),
+				zap.String("type", channelData.Type),
+				zap.Int("max_members", channelData.MaxMembers))
+		} else {
+			r.logger.Debug("Canal ya existe", zap.String("name", channelData.Name))
 		}
-		existingChannels.Close()
 	}
 
 	return nil
+}
+
+// GetAllChannels obtiene todos los canales desde la base de datos
+func (r *ChatRepository) GetAllChannels() ([]*models.ChatChannel, error) {
+	rows, err := r.db.Query(`
+		SELECT id, name, description, type, world_id, is_active, max_members, created_at
+		FROM chat_channels
+		WHERE is_active = true
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var channels []*models.ChatChannel
+	for rows.Next() {
+		var channel models.ChatChannel
+		var worldID sql.NullString
+
+		err := rows.Scan(
+			&channel.ID,
+			&channel.Name,
+			&channel.Description,
+			&channel.Type,
+			&worldID,
+			&channel.IsActive,
+			&channel.MaxMembers,
+			&channel.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if worldID.Valid {
+			worldUUID, err := uuid.Parse(worldID.String)
+			if err == nil {
+				channel.WorldID = &worldUUID
+			}
+		}
+
+		channels = append(channels, &channel)
+	}
+
+	return channels, nil
+}
+
+// GetChannelByID obtiene un canal específico por ID
+func (r *ChatRepository) GetChannelByID(channelID string) (*models.ChatChannel, error) {
+	var channel models.ChatChannel
+	var worldID sql.NullString
+
+	err := r.db.QueryRow(`
+		SELECT id, name, description, type, world_id, is_active, max_members, created_at
+		FROM chat_channels
+		WHERE id = $1 AND is_active = true
+	`, channelID).Scan(
+		&channel.ID,
+		&channel.Name,
+		&channel.Description,
+		&channel.Type,
+		&worldID,
+		&channel.IsActive,
+		&channel.MaxMembers,
+		&channel.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if worldID.Valid {
+		worldUUID, err := uuid.Parse(worldID.String)
+		if err == nil {
+			channel.WorldID = &worldUUID
+		}
+	}
+
+	return &channel, nil
+}
+
+// GetChannelByName obtiene un canal específico por nombre (case insensitive)
+func (r *ChatRepository) GetChannelByName(name string) (*models.ChatChannel, error) {
+	var channel models.ChatChannel
+	var worldID sql.NullString
+
+	err := r.db.QueryRow(`
+		SELECT id, name, description, type, world_id, is_active, max_members, created_at
+		FROM chat_channels
+		WHERE LOWER(name) = LOWER($1) AND is_active = true
+	`, name).Scan(
+		&channel.ID,
+		&channel.Name,
+		&channel.Description,
+		&channel.Type,
+		&worldID,
+		&channel.IsActive,
+		&channel.MaxMembers,
+		&channel.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if worldID.Valid {
+		worldUUID, err := uuid.Parse(worldID.String)
+		if err == nil {
+			channel.WorldID = &worldUUID
+		}
+	}
+
+	return &channel, nil
+}
+
+// CreateChannel crea un nuevo canal en la base de datos
+func (r *ChatRepository) CreateChannel(channel *models.ChatChannel) error {
+	channel.ID = uuid.New()
+	channel.CreatedAt = time.Now()
+
+	_, err := r.db.Exec(`
+		INSERT INTO chat_channels (id, name, description, type, world_id, is_active, max_members, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, channel.ID, channel.Name, channel.Description, channel.Type, channel.WorldID, channel.IsActive, channel.MaxMembers, channel.CreatedAt)
+
+	return err
+}
+
+// UpdateChannel actualiza un canal existente
+func (r *ChatRepository) UpdateChannel(channel *models.ChatChannel) error {
+	_, err := r.db.Exec(`
+		UPDATE chat_channels 
+		SET name = $2, description = $3, type = $4, world_id = $5, is_active = $6, max_members = $7
+		WHERE id = $1
+	`, channel.ID, channel.Name, channel.Description, channel.Type, channel.WorldID, channel.IsActive, channel.MaxMembers)
+
+	return err
+}
+
+// DeleteChannel marca un canal como inactivo
+func (r *ChatRepository) DeleteChannel(channelID string) error {
+	_, err := r.db.Exec(`
+		UPDATE chat_channels 
+		SET is_active = false
+		WHERE id = $1
+	`, channelID)
+
+	return err
 }
