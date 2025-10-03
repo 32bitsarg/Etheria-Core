@@ -1,16 +1,17 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"server-backend/config"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
-func ServerTimeHandler(w http.ResponseWriter, r *http.Request) {
+func ServerTimeHandler(c *gin.Context) {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		http.Error(w, "Error cargando configuración", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error cargando configuración"})
 		return
 	}
 	loc, err := time.LoadLocation(cfg.TimeZone)
@@ -18,8 +19,7 @@ func ServerTimeHandler(w http.ResponseWriter, r *http.Request) {
 		loc = time.UTC
 	}
 	now := time.Now().In(loc)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	c.JSON(http.StatusOK, gin.H{
 		"server_time": now.Format(time.RFC3339),
 	})
 }

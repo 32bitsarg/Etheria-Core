@@ -1,18 +1,18 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"go.uber.org/zap"
 
 	"server-backend/auth"
 	"server-backend/models"
 	"server-backend/repository"
 	"server-backend/services"
-
-	"github.com/google/uuid"
-	"go.uber.org/zap"
 )
 
 type AuthHandler struct {
@@ -55,10 +55,10 @@ type AuthResponse struct {
 	Username string `json:"username"`
 }
 
-func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Error decodificando la solicitud", http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decodificando la solicitud"})
 		return
 	}
 
@@ -69,11 +69,11 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 			zap.Error(err),
 			zap.String("username", req.Username),
 		)
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if exists {
-		http.Error(w, "El nombre de usuario ya está en uso", http.StatusConflict)
+		c.JSON(http.StatusConflict, gin.H{"error": "El nombre de usuario ya está en uso"})
 		return
 	}
 
@@ -83,7 +83,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("Error hasheando contraseña",
 			zap.Error(err),
 		)
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -94,7 +94,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 			zap.Error(err),
 			zap.String("username", req.Username),
 		)
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -105,7 +105,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 			zap.Error(err),
 			zap.String("username", req.Username),
 		)
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -116,14 +116,13 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		Username: req.Username,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	c.JSON(http.StatusOK, response)
 }
 
-func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Error decodificando la solicitud", http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decodificando la solicitud"})
 		return
 	}
 
@@ -134,19 +133,19 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			zap.Error(err),
 			zap.String("username", req.Username),
 		)
-		http.Error(w, "Credenciales inválidas", http.StatusUnauthorized)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Credenciales inválidas"})
 		return
 	}
 
 	// Verificar que el jugador existe
 	if player == nil {
-		http.Error(w, "Credenciales inválidas", http.StatusUnauthorized)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Credenciales inválidas"})
 		return
 	}
 
 	// Verificar contraseña
 	if !auth.CheckPasswordHash(req.Password, player.Password) {
-		http.Error(w, "Credenciales inválidas", http.StatusUnauthorized)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Credenciales inválidas"})
 		return
 	}
 
@@ -157,7 +156,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			zap.Error(err),
 			zap.String("username", req.Username),
 		)
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -184,17 +183,16 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Username: player.Username,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	c.JSON(http.StatusOK, response)
 }
 
-func (h *AuthHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) GetProfile(c *gin.Context) {
 	// Obtener el ID del jugador del contexto
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -202,11 +200,11 @@ func (h *AuthHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	player, err := h.playerRepo.GetPlayerByID(playerID)
 	if err != nil {
 		h.logger.Error("Error obteniendo perfil", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if player == nil {
-		http.Error(w, "Jugador no encontrado", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Jugador no encontrado"})
 		return
 	}
 
@@ -214,7 +212,7 @@ func (h *AuthHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	villages, err := h.villageRepo.GetVillagesByPlayerID(playerID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldeas del jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -249,34 +247,33 @@ func (h *AuthHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("No se encontraron aldeas para el jugador", zap.String("player_id", playerID.String()))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(player)
+	c.JSON(http.StatusOK, player)
 }
 
-func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	// Obtener el ID del jugador del contexto
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
 	// Decodificar la solicitud
 	var req UpdateProfileRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Error decodificando la solicitud", http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decodificando la solicitud"})
 		return
 	}
 
 	// Validar datos de entrada
 	if strings.TrimSpace(req.Username) == "" {
-		http.Error(w, "El nombre de usuario es requerido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "El nombre de usuario es requerido"})
 		return
 	}
 	if strings.TrimSpace(req.Email) == "" {
-		http.Error(w, "El email es requerido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "El email es requerido"})
 		return
 	}
 
@@ -284,22 +281,18 @@ func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	err = h.playerRepo.UpdatePlayer(playerID, req.Username, req.Email)
 	if err != nil {
 		h.logger.Error("Error actualizando perfil", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"message": "Perfil actualizado exitosamente",
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Perfil actualizado exitosamente"})
 }
 
-func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	playerIDStr := r.Context().Value("player_id").(string)
+func (h *AuthHandler) Logout(c *gin.Context) {
+	playerIDStr := c.GetString("player_id")
 	if h.redisService != nil {
 		h.redisService.DeleteUserSession(playerIDStr)
 		h.redisService.SetUserOffline(playerIDStr)
 	}
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Logout exitoso"))
+	c.JSON(http.StatusOK, gin.H{"message": "Logout exitoso"})
 }

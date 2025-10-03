@@ -413,6 +413,42 @@ func (m *Manager) SendResourceUpdate(villageID string, resources models.Resource
 	m.broadcast <- messageBytes
 }
 
+// SendResourceUpdateToUser envía actualización de recursos a un usuario específico
+func (m *Manager) SendResourceUpdateToUser(userID string, villageID string, resources models.ResourceUpdate) error {
+	message := WSMessage{
+		Type: "resource_update",
+		Data: map[string]interface{}{
+			"village_id": villageID,
+			"resources":  resources,
+		},
+		Time: time.Now(),
+	}
+
+	return m.SendToUser(userID, "resource_update", message.Data)
+}
+
+// SendResourceUpdateToAllVillages envía actualización a todos los usuarios conectados
+func (m *Manager) SendResourceUpdateToAllVillages(resources map[string]models.ResourceUpdate) error {
+	for villageID, resourceUpdate := range resources {
+		message := WSMessage{
+			Type: "resource_update",
+			Data: map[string]interface{}{
+				"village_id": villageID,
+				"resources":  resourceUpdate,
+			},
+			Time: time.Now(),
+		}
+
+		messageBytes, err := json.Marshal(message)
+		if err != nil {
+			return fmt.Errorf("error serializando mensaje de recursos: %v", err)
+		}
+
+		m.broadcast <- messageBytes
+	}
+	return nil
+}
+
 func (m *Manager) SendBuildingUpdate(villageID string, building models.Building) {
 	message := WSMessage{
 		Type: "building_update",

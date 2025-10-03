@@ -1,17 +1,15 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"server-backend/repository"
 	"server-backend/services"
+	"strconv"
 	"strings"
 	"time"
 
-	"strconv"
-
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -30,13 +28,13 @@ func NewVillageHandler(villageRepo *repository.VillageRepository, constructionSe
 	}
 }
 
-func (h *VillageHandler) GetVillage(w http.ResponseWriter, r *http.Request) {
+func (h *VillageHandler) GetVillage(c *gin.Context) {
 	// Obtener el ID del jugador del contexto
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -44,30 +42,29 @@ func (h *VillageHandler) GetVillage(w http.ResponseWriter, r *http.Request) {
 	villages, err := h.villageRepo.GetVillagesByPlayerID(playerID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldeas", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
 	// Si no hay aldeas, devolver error
 	if len(villages) == 0 {
-		http.Error(w, "No tienes aldeas", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "No tienes aldeas"})
 		return
 	}
 
 	// Por ahora, devolver la primera aldea (se puede mejorar para manejar múltiples aldeas)
 	village := villages[0]
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(village)
+	c.JSON(http.StatusOK, village)
 }
 
-func (h *VillageHandler) GetPlayerVillages(w http.ResponseWriter, r *http.Request) {
+func (h *VillageHandler) GetPlayerVillages(c *gin.Context) {
 	// Obtener el ID del jugador del contexto
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -75,24 +72,25 @@ func (h *VillageHandler) GetPlayerVillages(w http.ResponseWriter, r *http.Reques
 	villages, err := h.villageRepo.GetVillagesByPlayerID(playerID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldeas", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(villages)
+	c.JSON(http.StatusOK, villages)
 }
 
 type UpgradeBuildingRequest struct {
 	BuildingType string `json:"building_type"`
 }
 
-func (h *VillageHandler) UpgradeBuilding(w http.ResponseWriter, r *http.Request) {
-	// Obtener el ID de la aldea de la URL
-	villageIDStr := chi.URLParam(r, "id")
+func (h *VillageHandler) UpgradeBuilding(c *gin.Context) {
+	villageIDStr := c.Param("villageID")
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		h.logger.Error("Error parseando villageID",
+			zap.String("villageID", villageIDStr),
+			zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
@@ -100,37 +98,37 @@ func (h *VillageHandler) UpgradeBuilding(w http.ResponseWriter, r *http.Request)
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 
 	// Verificar que el jugador tiene acceso a la aldea
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No tienes permiso para actualizar esta aldea", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para actualizar esta aldea"})
 		return
 	}
 
 	// Decodificar la solicitud
 	var req UpgradeBuildingRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Error decodificando la solicitud", http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decodificando la solicitud"})
 		return
 	}
 
 	// Validar el tipo de edificio
 	if strings.TrimSpace(req.BuildingType) == "" {
-		http.Error(w, "El tipo de edificio es requerido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "El tipo de edificio es requerido"})
 		return
 	}
 
@@ -139,44 +137,45 @@ func (h *VillageHandler) UpgradeBuilding(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		switch err {
 		case services.ErrInsufficientResources:
-			http.Error(w, "Recursos insuficientes para mejorar el edificio", http.StatusBadRequest)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Recursos insuficientes para mejorar el edificio"})
 		case services.ErrBuildingMaxLevel:
-			http.Error(w, "El edificio ya está en su nivel máximo", http.StatusBadRequest)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "El edificio ya está en su nivel máximo"})
 		case services.ErrBuildingUpgrading:
-			http.Error(w, "El edificio ya está siendo mejorado", http.StatusBadRequest)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "El edificio ya está siendo mejorado"})
 		case services.ErrInvalidBuildingType:
-			http.Error(w, "Tipo de edificio inválido", http.StatusBadRequest)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio inválido"})
 		case services.ErrTownHallRequired:
-			http.Error(w, "Se requiere un ayuntamiento de nivel superior", http.StatusBadRequest)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Se requiere un ayuntamiento de nivel superior"})
 		default:
 			h.logger.Error("Error mejorando edificio", zap.Error(err))
-			http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		}
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	c.JSON(http.StatusOK, gin.H{
 		"message": "Edificio mejorado exitosamente",
 		"result":  result,
 	})
 }
 
 // GetBuildingUpgradeInfo obtiene información sobre la mejora de un edificio
-func (h *VillageHandler) GetBuildingUpgradeInfo(w http.ResponseWriter, r *http.Request) {
-	// Obtener el ID de la aldea de la URL
-	villageIDStr := chi.URLParam(r, "villageID")
+func (h *VillageHandler) GetBuildingUpgradeInfo(c *gin.Context) {
+	villageIDStr := c.Param("villageID")
+	buildingType := c.Param("buildingType")
+
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		h.logger.Error("Error parseando villageID",
+			zap.String("villageID", villageIDStr),
+			zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
-	// Obtener el tipo de edificio de la URL
-	buildingType := chi.URLParam(r, "buildingType")
 	if buildingType == "" {
-		http.Error(w, "Tipo de edificio requerido", http.StatusBadRequest)
+		h.logger.Error("buildingType vacío")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio requerido"})
 		return
 	}
 
@@ -184,23 +183,23 @@ func (h *VillageHandler) GetBuildingUpgradeInfo(w http.ResponseWriter, r *http.R
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No tienes permiso para ver esta aldea", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para ver esta aldea"})
 		return
 	}
 
@@ -208,32 +207,31 @@ func (h *VillageHandler) GetBuildingUpgradeInfo(w http.ResponseWriter, r *http.R
 	upgradeInfo, err := h.constructionService.GetUpgradeInfo(villageID, buildingType)
 	if err != nil {
 		h.logger.Error("Error obteniendo información de mejora", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(upgradeInfo)
+	c.JSON(http.StatusOK, upgradeInfo)
 }
 
 // CheckBuildingRequirements verifica los requisitos para construir un edificio
-func (h *VillageHandler) CheckBuildingRequirements(w http.ResponseWriter, r *http.Request) {
+func (h *VillageHandler) CheckBuildingRequirements(c *gin.Context) {
 	// Obtener el ID de la aldea de la URL
-	villageIDStr := chi.URLParam(r, "villageID")
+	villageIDStr := c.Param("villageID")
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
 	// Obtener el tipo de edificio y nivel objetivo de los query parameters
-	buildingType := r.URL.Query().Get("buildingType")
+	buildingType := c.Query("buildingType")
 	if buildingType == "" {
-		http.Error(w, "Tipo de edificio requerido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio requerido"})
 		return
 	}
 
-	targetLevelStr := r.URL.Query().Get("targetLevel")
+	targetLevelStr := c.Query("targetLevel")
 	targetLevel := 1 // Por defecto
 	if targetLevelStr != "" {
 		if level, err := strconv.Atoi(targetLevelStr); err == nil {
@@ -245,23 +243,23 @@ func (h *VillageHandler) CheckBuildingRequirements(w http.ResponseWriter, r *htt
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No tienes permiso para ver esta aldea", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para ver esta aldea"})
 		return
 	}
 
@@ -269,21 +267,20 @@ func (h *VillageHandler) CheckBuildingRequirements(w http.ResponseWriter, r *htt
 	requirements, err := h.constructionService.CheckBuildingRequirements(villageID, buildingType, targetLevel)
 	if err != nil {
 		h.logger.Error("Error verificando requisitos", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(requirements)
+	c.JSON(http.StatusOK, requirements)
 }
 
 // ProcessConstructionQueue procesa la cola de construcción de una aldea
-func (h *VillageHandler) ProcessConstructionQueue(w http.ResponseWriter, r *http.Request) {
+func (h *VillageHandler) ProcessConstructionQueue(c *gin.Context) {
 	// Obtener el ID de la aldea de la URL
-	villageIDStr := chi.URLParam(r, "villageID")
+	villageIDStr := c.Param("villageID")
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
@@ -291,23 +288,23 @@ func (h *VillageHandler) ProcessConstructionQueue(w http.ResponseWriter, r *http
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No tienes permiso para procesar esta aldea", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para procesar esta aldea"})
 		return
 	}
 
@@ -315,24 +312,23 @@ func (h *VillageHandler) ProcessConstructionQueue(w http.ResponseWriter, r *http
 	results, err := h.constructionService.ProcessConstructionQueue(villageID)
 	if err != nil {
 		h.logger.Error("Error procesando cola de construcción", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	c.JSON(http.StatusOK, gin.H{
 		"message": "Cola de construcción procesada",
 		"results": results,
 	})
 }
 
 // GetConstructionQueue obtiene la cola de construcción de una aldea
-func (h *VillageHandler) GetConstructionQueue(w http.ResponseWriter, r *http.Request) {
+func (h *VillageHandler) GetConstructionQueue(c *gin.Context) {
 	// Obtener el ID de la aldea de la URL
-	villageIDStr := chi.URLParam(r, "villageID")
+	villageIDStr := c.Param("villageID")
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
@@ -340,23 +336,23 @@ func (h *VillageHandler) GetConstructionQueue(w http.ResponseWriter, r *http.Req
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No tienes permiso para ver esta aldea", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para ver esta aldea"})
 		return
 	}
 
@@ -364,28 +360,27 @@ func (h *VillageHandler) GetConstructionQueue(w http.ResponseWriter, r *http.Req
 	queue, err := h.constructionService.GetConstructionQueue(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo cola de construcción", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(queue)
+	c.JSON(http.StatusOK, queue)
 }
 
 // CancelUpgrade cancela la mejora de un edificio
-func (h *VillageHandler) CancelUpgrade(w http.ResponseWriter, r *http.Request) {
+func (h *VillageHandler) CancelUpgrade(c *gin.Context) {
 	// Obtener el ID de la aldea de la URL
-	villageIDStr := chi.URLParam(r, "villageID")
+	villageIDStr := c.Param("villageID")
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
 	// Obtener el tipo de edificio de la URL
-	buildingType := chi.URLParam(r, "buildingType")
+	buildingType := c.Param("buildingType")
 	if buildingType == "" {
-		http.Error(w, "Tipo de edificio requerido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio requerido"})
 		return
 	}
 
@@ -393,54 +388,68 @@ func (h *VillageHandler) CancelUpgrade(w http.ResponseWriter, r *http.Request) {
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No tienes permiso para cancelar en esta aldea", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para cancelar en esta aldea"})
 		return
 	}
 
-	// Cancelar mejora usando el servicio avanzado
-	err = h.constructionService.CancelUpgrade(villageID, buildingType)
+	// Cancelar la mejora con reembolso
+	result, err := h.constructionService.CancelUpgradeWithRefund(villageID, buildingType)
 	if err != nil {
-		h.logger.Error("Error cancelando mejora", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		switch err.Error() {
+		case "el edificio no está siendo mejorado":
+			c.JSON(http.StatusBadRequest, gin.H{"error": "El edificio no está siendo mejorado"})
+		case "tipo de edificio inválido":
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio inválido"})
+		case "aldea no encontrada":
+			c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
+		default:
+			h.logger.Error("Error cancelando mejora", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
+		}
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"message": "Mejora cancelada exitosamente",
+	// Respuesta exitosa
+	c.JSON(http.StatusOK, gin.H{
+		"message":           "Mejora cancelada exitosamente",
+		"building_type":     result.BuildingType,
+		"refund_amount":     result.RefundAmount,
+		"refund_percentage": result.RefundPercentage,
+		"original_cost":     result.OriginalCost,
+		"cancelled_at":      result.CancelledAt,
+		"time_remaining":    result.TimeRemaining.String(),
+		"refund_reason":     result.RefundReason,
 	})
 }
 
 // CompleteBuildingUpgrade completa la mejora de un edificio
-func (h *VillageHandler) CompleteBuildingUpgrade(w http.ResponseWriter, r *http.Request) {
-	// Obtener el ID de la aldea de la URL
-	villageIDStr := chi.URLParam(r, "villageID")
+func (h *VillageHandler) CompleteBuildingUpgrade(c *gin.Context) {
+	villageIDStr := c.Param("villageID")
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
-	// Obtener el tipo de edificio de la URL
-	buildingType := chi.URLParam(r, "buildingType")
+	buildingType := c.Param("buildingType")
 	if buildingType == "" {
-		http.Error(w, "Tipo de edificio requerido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio requerido"})
 		return
 	}
 
@@ -448,23 +457,23 @@ func (h *VillageHandler) CompleteBuildingUpgrade(w http.ResponseWriter, r *http.
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No tienes permiso para acceder a esta aldea", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para acceder a esta aldea"})
 		return
 	}
 
@@ -473,39 +482,35 @@ func (h *VillageHandler) CompleteBuildingUpgrade(w http.ResponseWriter, r *http.
 	if err != nil {
 		switch err.Error() {
 		case "el edificio no está siendo mejorado":
-			http.Error(w, "El edificio no está siendo mejorado", http.StatusBadRequest)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "El edificio no está siendo mejorado"})
 		case "la mejora aún no ha terminado":
-			http.Error(w, "La mejora aún no ha terminado", http.StatusBadRequest)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "La mejora aún no ha terminado"})
 		case services.ErrInvalidBuildingType.Error():
-			http.Error(w, "Tipo de edificio inválido", http.StatusBadRequest)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio inválido"})
 		default:
 			h.logger.Error("Error completando mejora", zap.Error(err))
-			http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		}
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	c.JSON(http.StatusOK, gin.H{
 		"message": "Mejora completada exitosamente",
 	})
 }
 
-// GetBuildingUpgradeTimeRemaining obtiene el tiempo restante de mejora en tiempo real
-func (h *VillageHandler) GetBuildingUpgradeTimeRemaining(w http.ResponseWriter, r *http.Request) {
-	// Obtener el ID de la aldea de la URL
-	villageIDStr := chi.URLParam(r, "villageID")
+// CancelBuildingUpgrade cancela la mejora de un edificio con reembolso del 50%
+func (h *VillageHandler) CancelBuildingUpgrade(c *gin.Context) {
+	villageIDStr := c.Param("villageID")
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
-	// Obtener el tipo de edificio de la URL
-	buildingType := chi.URLParam(r, "buildingType")
+	buildingType := c.Param("buildingType")
 	if buildingType == "" {
-		http.Error(w, "Tipo de edificio requerido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio requerido"})
 		return
 	}
 
@@ -513,37 +518,107 @@ func (h *VillageHandler) GetBuildingUpgradeTimeRemaining(w http.ResponseWriter, 
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No tienes permiso para acceder a esta aldea", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para cancelar mejoras en esta aldea"})
+		return
+	}
+
+	// Cancelar la mejora con reembolso
+	result, err := h.constructionService.CancelUpgradeWithRefund(villageID, buildingType)
+	if err != nil {
+		switch err.Error() {
+		case "el edificio no está siendo mejorado":
+			c.JSON(http.StatusBadRequest, gin.H{"error": "El edificio no está siendo mejorado"})
+		case "tipo de edificio inválido":
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio inválido"})
+		case "aldea no encontrada":
+			c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
+		default:
+			h.logger.Error("Error cancelando mejora", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
+		}
+		return
+	}
+
+	// Respuesta exitosa
+	c.JSON(http.StatusOK, gin.H{
+		"message":           "Mejora cancelada exitosamente",
+		"building_type":     result.BuildingType,
+		"refund_amount":     result.RefundAmount,
+		"refund_percentage": result.RefundPercentage,
+		"original_cost":     result.OriginalCost,
+		"cancelled_at":      result.CancelledAt,
+		"time_remaining":    result.TimeRemaining.String(),
+		"refund_reason":     result.RefundReason,
+	})
+}
+
+// GetBuildingUpgradeTimeRemaining obtiene el tiempo restante de mejora en tiempo real
+func (h *VillageHandler) GetBuildingUpgradeTimeRemaining(c *gin.Context) {
+	// Obtener el ID de la aldea de la URL
+	villageIDStr := c.Param("villageID")
+	villageID, err := uuid.Parse(villageIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
+		return
+	}
+
+	// Obtener el tipo de edificio de la URL
+	buildingType := c.Param("buildingType")
+	if buildingType == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de edificio requerido"})
+		return
+	}
+
+	// Verificar permisos
+	village, err := h.villageRepo.GetVillageByID(villageID)
+	if err != nil {
+		h.logger.Error("Error obteniendo aldea", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
+		return
+	}
+	if village == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
+		return
+	}
+
+	playerIDStr := c.GetString("player_id")
+	playerID, err := uuid.Parse(playerIDStr)
+	if err != nil {
+		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
+		return
+	}
+	if village.Village.PlayerID != playerID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para acceder a esta aldea"})
 		return
 	}
 
 	// Obtener información del edificio
 	building, exists := village.Buildings[buildingType]
 	if !exists {
-		http.Error(w, "Edificio no encontrado", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Edificio no encontrado"})
 		return
 	}
 
 	// Verificar si está mejorándose
 	if !building.IsUpgrading || building.UpgradeCompletionTime == nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		c.JSON(http.StatusOK, gin.H{
 			"building_type":   buildingType,
 			"is_upgrading":    false,
 			"time_remaining":  0,
@@ -559,8 +634,7 @@ func (h *VillageHandler) GetBuildingUpgradeTimeRemaining(w http.ResponseWriter, 
 
 	// Si ya terminó, devolver 0
 	if timeRemaining <= 0 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		c.JSON(http.StatusOK, gin.H{
 			"building_type":   buildingType,
 			"is_upgrading":    false,
 			"time_remaining":  0,
@@ -576,8 +650,7 @@ func (h *VillageHandler) GetBuildingUpgradeTimeRemaining(w http.ResponseWriter, 
 	seconds := int(timeRemaining.Seconds()) % 60
 	formattedTime := fmt.Sprintf("%02d:%02d", minutes, seconds)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	c.JSON(http.StatusOK, gin.H{
 		"building_type":   buildingType,
 		"is_upgrading":    true,
 		"time_remaining":  int64(timeRemaining.Seconds()),
@@ -585,4 +658,52 @@ func (h *VillageHandler) GetBuildingUpgradeTimeRemaining(w http.ResponseWriter, 
 		"formatted_time":  formattedTime,
 		"can_complete":    false,
 	})
+}
+
+// GetConstructionQueueStatus obtiene el estado de la cola de construcción
+func (h *VillageHandler) GetConstructionQueueStatus(c *gin.Context) {
+	villageIDStr := c.Param("villageID")
+
+	villageID, err := uuid.Parse(villageIDStr)
+	if err != nil {
+		h.logger.Error("Error parseando villageID",
+			zap.String("villageID", villageIDStr),
+			zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
+		return
+	}
+
+	// Verificar que la aldea existe y pertenece al jugador
+	village, err := h.villageRepo.GetVillageByID(villageID)
+	if err != nil {
+		h.logger.Error("Error obteniendo aldea", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
+		return
+	}
+	if village == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
+		return
+	}
+
+	playerIDStr := c.GetString("player_id")
+	playerID, err := uuid.Parse(playerIDStr)
+	if err != nil {
+		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
+		return
+	}
+	if village.Village.PlayerID != playerID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "No tienes permiso para ver esta aldea"})
+		return
+	}
+
+	// Obtener estado de la cola de construcción
+	queueStatus, err := h.constructionService.GetConstructionQueueStatus(villageID)
+	if err != nil {
+		h.logger.Error("Error obteniendo estado de cola", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
+		return
+	}
+
+	c.JSON(http.StatusOK, queueStatus)
 }

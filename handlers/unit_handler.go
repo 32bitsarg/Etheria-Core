@@ -1,11 +1,11 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"server-backend/models"
 	"server-backend/repository"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -45,26 +45,26 @@ type UnitResponse struct {
 	TrainingTime int `json:"training_time"`
 }
 
-func (h *UnitHandler) GetUnits(w http.ResponseWriter, r *http.Request) {
+func (h *UnitHandler) GetUnits(c *gin.Context) {
 	// Obtener el ID del jugador del contexto
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
 	// Obtener el ID de la aldea de los query params
-	villageIDStr := r.URL.Query().Get("village_id")
+	villageIDStr := c.Query("village_id")
 	if villageIDStr == "" {
-		http.Error(w, "ID de aldea requerido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea requerido"})
 		return
 	}
 
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
@@ -72,15 +72,15 @@ func (h *UnitHandler) GetUnits(w http.ResponseWriter, r *http.Request) {
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No autorizado", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No autorizado"})
 		return
 	}
 
@@ -88,7 +88,7 @@ func (h *UnitHandler) GetUnits(w http.ResponseWriter, r *http.Request) {
 	units, err := h.unitRepo.GetUnitsByVillageID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo unidades", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -139,30 +139,29 @@ func (h *UnitHandler) GetUnits(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	c.JSON(http.StatusOK, response)
 }
 
-func (h *UnitHandler) TrainUnits(w http.ResponseWriter, r *http.Request) {
+func (h *UnitHandler) TrainUnits(c *gin.Context) {
 	// Obtener el ID del jugador del contexto
-	playerIDStr := r.Context().Value("player_id").(string)
+	playerIDStr := c.GetString("player_id")
 	playerID, err := uuid.Parse(playerIDStr)
 	if err != nil {
 		h.logger.Error("Error parseando ID de jugador", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
 	// Obtener el ID de la aldea de los query params
-	villageIDStr := r.URL.Query().Get("village_id")
+	villageIDStr := c.Query("village_id")
 	if villageIDStr == "" {
-		http.Error(w, "ID de aldea requerido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea requerido"})
 		return
 	}
 
 	villageID, err := uuid.Parse(villageIDStr)
 	if err != nil {
-		http.Error(w, "ID de aldea inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de aldea inválido"})
 		return
 	}
 
@@ -170,35 +169,35 @@ func (h *UnitHandler) TrainUnits(w http.ResponseWriter, r *http.Request) {
 	village, err := h.villageRepo.GetVillageByID(villageID)
 	if err != nil {
 		h.logger.Error("Error obteniendo aldea", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 	if village == nil {
-		http.Error(w, "Aldea no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aldea no encontrada"})
 		return
 	}
 	if village.Village.PlayerID != playerID {
-		http.Error(w, "No autorizado", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No autorizado"})
 		return
 	}
 
 	// Decodificar la solicitud
 	var req TrainUnitsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Error decodificando la solicitud", http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decodificando la solicitud"})
 		return
 	}
 
 	// Validar el tipo de unidad
 	unitType, exists := models.UnitTypes[req.UnitType]
 	if !exists {
-		http.Error(w, "Tipo de unidad inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Tipo de unidad inválido"})
 		return
 	}
 
 	// Validar cantidad
 	if req.Quantity <= 0 {
-		http.Error(w, "Cantidad debe ser mayor a 0", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cantidad debe ser mayor a 0"})
 		return
 	}
 
@@ -219,14 +218,14 @@ func (h *UnitHandler) TrainUnits(w http.ResponseWriter, r *http.Request) {
 		village.Resources.Stone < totalCost.Stone ||
 		village.Resources.Food < totalCost.Food ||
 		village.Resources.Gold < totalCost.Gold {
-		http.Error(w, "Recursos insuficientes", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Recursos insuficientes"})
 		return
 	}
 
 	// Verificar que hay cuartel para entrenar unidades
 	barracks, exists := village.Buildings["barracks"]
 	if !exists || barracks.Level < 1 {
-		http.Error(w, "Se requiere cuartel nivel 1 para entrenar unidades", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Se requiere cuartel nivel 1 para entrenar unidades"})
 		return
 	}
 
@@ -234,7 +233,7 @@ func (h *UnitHandler) TrainUnits(w http.ResponseWriter, r *http.Request) {
 	err = h.unitRepo.StartTraining(villageID, req.UnitType, req.Quantity)
 	if err != nil {
 		h.logger.Error("Error iniciando entrenamiento", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
@@ -247,24 +246,22 @@ func (h *UnitHandler) TrainUnits(w http.ResponseWriter, r *http.Request) {
 	err = h.villageRepo.UpdateResources(villageID, newWood, newStone, newFood, newGold)
 	if err != nil {
 		h.logger.Error("Error actualizando recursos", zap.Error(err))
-		http.Error(w, "Error interno del servidor", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error interno del servidor"})
 		return
 	}
 
 	// Respuesta exitosa
-	response := map[string]interface{}{
+	response := gin.H{
 		"message":       "Entrenamiento iniciado exitosamente",
 		"unit_type":     req.UnitType,
 		"quantity":      req.Quantity,
 		"training_time": unitType.TrainingTime,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	c.JSON(http.StatusOK, response)
 }
 
-func (h *UnitHandler) GetUnitTypes(w http.ResponseWriter, r *http.Request) {
+func (h *UnitHandler) GetUnitTypes(c *gin.Context) {
 	// Devolver todos los tipos de unidades disponibles
 	var response []UnitResponse
 	for unitType, unitTypeInfo := range models.UnitTypes {
@@ -278,6 +275,5 @@ func (h *UnitHandler) GetUnitTypes(w http.ResponseWriter, r *http.Request) {
 		response = append(response, unitResp)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	c.JSON(http.StatusOK, response)
 }

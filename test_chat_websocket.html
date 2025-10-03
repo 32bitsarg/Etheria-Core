@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test WebSocket Chat - Etheria Core</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.connecting {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .chat-container {
+            border: 1px solid #ddd;
+            height: 300px;
+            overflow-y: auto;
+            padding: 10px;
+            margin: 10px 0;
+            background-color: #fafafa;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 4px;
+        }
+        .message.system {
+            background-color: #e3f2fd;
+            color: #1976d2;
+            font-style: italic;
+        }
+        .message.user {
+            background-color: #e8f5e8;
+            color: #2e7d32;
+        }
+        .message.join {
+            background-color: #fff3e0;
+            color: #f57c00;
+        }
+        .message.leave {
+            background-color: #fce4ec;
+            color: #c2185b;
+        }
+        .message.error {
+            background-color: #ffebee;
+            color: #d32f2f;
+        }
+        input[type="text"] {
+            width: 70%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 8px 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .controls {
+            margin: 10px 0;
+        }
+        .info {
+            background-color: #e7f3ff;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            border-left: 4px solid #007bff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 Test WebSocket Chat - Etheria Core</h1>
+        
+        <div class="info">
+            <strong>📋 Instrucciones:</strong><br>
+            1. Primero obtén un token JWT válido haciendo login<br>
+            2. Ingresa el token en el campo "JWT Token"<br>
+            3. Selecciona un canal (global, alliance:1, etc.)<br>
+            4. Haz clic en "Conectar" para establecer la conexión WebSocket<br>
+            5. Envía mensajes y observa las respuestas en tiempo real
+        </div>
+
+        <div class="controls">
+            <label for="token">JWT Token:</label><br>
+            <input type="text" id="token" placeholder="Ingresa tu JWT token aquí..." style="width: 100%; margin: 5px 0;">
+            
+            <label for="channel">Canal:</label><br>
+            <input type="text" id="channel" value="global" placeholder="global, alliance:1, etc." style="width: 100%; margin: 5px 0;">
+            
+            <button onclick="connect()" id="connectBtn">Conectar</button>
+            <button onclick="disconnect()" id="disconnectBtn" disabled>Desconectar</button>
+        </div>
+
+        <div id="status" class="status disconnected">
+            ❌ Desconectado
+        </div>
+
+        <div class="chat-container" id="chatContainer">
+            <div class="message system">
+                💬 Bienvenido al test del WebSocket Chat. Conecta para comenzar.
+            </div>
+        </div>
+
+        <div class="controls">
+            <input type="text" id="messageInput" placeholder="Escribe tu mensaje aquí..." disabled>
+            <button onclick="sendMessage()" id="sendBtn" disabled>Enviar</button>
+        </div>
+
+        <div class="info">
+            <strong>🔍 Endpoints a probar:</strong><br>
+            • <code>GET /api/chat/channels</code> - Obtener canales<br>
+            • <code>GET /api/chat/ws?channel=global</code> - WebSocket del chat<br>
+            • <code>POST /api/chat/messages</code> - Enviar mensaje<br>
+            • <code>GET /api/chat/messages?channel=global</code> - Obtener mensajes recientes
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let isConnected = false;
+
+        function updateStatus(message, type) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        function addMessage(content, type = 'system') {
+            const chatContainer = document.getElementById('chatContainer');
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${type}`;
+            messageEl.textContent = content;
+            chatContainer.appendChild(messageEl);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function connect() {
+            const token = document.getElementById('token').value.trim();
+            const channel = document.getElementById('channel').value.trim();
+
+            if (!token) {
+                alert('Por favor ingresa un JWT token válido');
+                return;
+            }
+
+            if (!channel) {
+                alert('Por favor ingresa un canal');
+                return;
+            }
+
+            updateStatus('🔄 Conectando...', 'connecting');
+
+            // Construir URL del WebSocket
+            const wsUrl = `ws://localhost:8080/api/chat/ws?channel=${encodeURIComponent(channel)}`;
+            
+            try {
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = function() {
+                    isConnected = true;
+                    updateStatus('✅ Conectado al chat', 'connected');
+                    addMessage(`Conectado al canal: ${channel}`, 'system');
+                    
+                    // Habilitar controles
+                    document.getElementById('messageInput').disabled = false;
+                    document.getElementById('sendBtn').disabled = false;
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('disconnectBtn').disabled = false;
+                };
+
+                ws.onmessage = function(event) {
+                    try {
+                        const message = JSON.parse(event.data);
+                        console.log('Mensaje recibido:', message);
+                        
+                        let messageText = '';
+                        let messageType = 'user';
+
+                        switch(message.type) {
+                            case 'message':
+                                messageText = `${message.username}: ${message.message}`;
+                                messageType = 'user';
+                                break;
+                            case 'system':
+                                messageText = `[SISTEMA] ${message.message}`;
+                                messageType = 'system';
+                                break;
+                            case 'join':
+                                messageText = `👋 ${message.message}`;
+                                messageType = 'join';
+                                break;
+                            case 'leave':
+                                messageText = `👋 ${message.message}`;
+                                messageType = 'leave';
+                                break;
+                            case 'error':
+                                messageText = `❌ ERROR: ${message.message}`;
+                                messageType = 'error';
+                                break;
+                            default:
+                                messageText = `[${message.type}] ${message.message}`;
+                                messageType = 'system';
+                        }
+
+                        addMessage(messageText, messageType);
+                    } catch (e) {
+                        console.error('Error parseando mensaje:', e);
+                        addMessage(`Error parseando mensaje: ${event.data}`, 'error');
+                    }
+                };
+
+                ws.onclose = function(event) {
+                    isConnected = false;
+                    updateStatus('❌ Desconectado', 'disconnected');
+                    addMessage('Desconectado del chat', 'system');
+                    
+                    // Deshabilitar controles
+                    document.getElementById('messageInput').disabled = true;
+                    document.getElementById('sendBtn').disabled = true;
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                };
+
+                ws.onerror = function(error) {
+                    console.error('Error WebSocket:', error);
+                    updateStatus('❌ Error de conexión', 'disconnected');
+                    addMessage('Error de conexión WebSocket', 'error');
+                };
+
+            } catch (error) {
+                console.error('Error creando WebSocket:', error);
+                updateStatus('❌ Error de conexión', 'disconnected');
+                addMessage('Error creando conexión WebSocket', 'error');
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function sendMessage() {
+            const messageInput = document.getElementById('messageInput');
+            const message = messageInput.value.trim();
+
+            if (!message) {
+                alert('Por favor escribe un mensaje');
+                return;
+            }
+
+            if (!isConnected || !ws) {
+                alert('No estás conectado al chat');
+                return;
+            }
+
+            try {
+                const messageData = {
+                    message: message
+                };
+                
+                ws.send(JSON.stringify(messageData));
+                messageInput.value = '';
+                addMessage(`Tú: ${message}`, 'user');
+            } catch (error) {
+                console.error('Error enviando mensaje:', error);
+                addMessage('Error enviando mensaje', 'error');
+            }
+        }
+
+        // Permitir enviar mensaje con Enter
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Test de endpoints REST
+        async function testRestEndpoints() {
+            const token = document.getElementById('token').value.trim();
+            if (!token) {
+                alert('Por favor ingresa un JWT token primero');
+                return;
+            }
+
+            try {
+                // Test obtener canales
+                const channelsResponse = await fetch('http://localhost:8080/api/chat/channels', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (channelsResponse.ok) {
+                    const channels = await channelsResponse.json();
+                    addMessage(`✅ Canales obtenidos: ${JSON.stringify(channels)}`, 'system');
+                } else {
+                    addMessage(`❌ Error obteniendo canales: ${channelsResponse.status}`, 'error');
+                }
+
+                // Test obtener mensajes recientes
+                const channel = document.getElementById('channel').value.trim();
+                const messagesResponse = await fetch(`http://localhost:8080/api/chat/messages?channel=${channel}`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (messagesResponse.ok) {
+                    const messages = await messagesResponse.json();
+                    addMessage(`✅ Mensajes recientes obtenidos: ${messages.count} mensajes`, 'system');
+                } else {
+                    addMessage(`❌ Error obteniendo mensajes: ${messagesResponse.status}`, 'error');
+                }
+
+            } catch (error) {
+                console.error('Error testing REST endpoints:', error);
+                addMessage(`❌ Error probando endpoints REST: ${error.message}`, 'error');
+            }
+        }
+
+        // Agregar botón para probar endpoints REST
+        const testBtn = document.createElement('button');
+        testBtn.textContent = 'Probar REST API';
+        testBtn.onclick = testRestEndpoints;
+        testBtn.style.marginLeft = '10px';
+        document.querySelector('.controls').appendChild(testBtn);
+    </script>
+</body>
+</html>
+

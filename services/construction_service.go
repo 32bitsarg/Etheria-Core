@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"server-backend/models"
 	"server-backend/repository"
+	"server-backend/websocket"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,14 +21,25 @@ var (
 	ErrTownHallRequired       = errors.New("se requiere un ayuntamiento de nivel superior")
 	ErrBuildingConfigNotFound = errors.New("configuración de edificio no encontrada")
 	ErrRequirementsNotMet     = errors.New("no se cumplen los requisitos para construir")
+	ErrConstructionQueueFull  = errors.New("la cola de construcción está llena")
+)
+
+// Constantes para límites de construcción
+const (
+	MaxConstructionSlots = 4  // Máximo de slots de construcción por aldea
+	ActiveConstructionSlots = 2 // Slots activos (los otros 2 se habilitan con micropagos)
 )
 
 type ConstructionService struct {
 	villageRepo        *repository.VillageRepository
 	buildingConfigRepo *repository.BuildingConfigRepository
+	researchRepo       *repository.ResearchRepository
+	allianceRepo       *repository.AllianceRepository
 	redisService       *RedisService
 	logger             *zap.Logger
 	timeZone           string
+	requirementsEngine *BuildingRequirementsEngine
+	wsManager          *websocket.Manager
 }
 
 type ConstructionQueueItem struct {
@@ -41,8 +53,8 @@ type ConstructionQueueItem struct {
 	Status     string    `json:"status"` // "queued", "in_progress", "completed", "cancelled"
 }
 
-// BuildingRequirementsResult representa el resultado de verificar requisitos
-type BuildingRequirementsResult struct {
+// BuildingRequirementsResultLegacy representa el resultado de verificar requisitos (formato legacy)
+type BuildingRequirementsResultLegacy struct {
 	CanBuild            bool     `json:"can_build"`
 	MissingRequirements []string `json:"missing_requirements"`
 	CostWood            int      `json:"cost_wood"`
@@ -60,49 +72,64 @@ type ConstructionResult struct {
 	ResourcesSpent   json.RawMessage `json:"resources_spent"`
 }
 
-func NewConstructionService(villageRepo *repository.VillageRepository, buildingConfigRepo *repository.BuildingConfigRepository, redisService *RedisService, logger *zap.Logger, timeZone string) *ConstructionService {
+func NewConstructionService(
+	villageRepo *repository.VillageRepository,
+	buildingConfigRepo *repository.BuildingConfigRepository,
+	researchRepo *repository.ResearchRepository,
+	allianceRepo *repository.AllianceRepository,
+	redisService *RedisService,
+	logger *zap.Logger,
+	timeZone string,
+) *ConstructionService {
+	// Crear el motor de requisitos
+	requirementsEngine := NewBuildingRequirementsEngine(
+		villageRepo,
+		buildingConfigRepo,
+		researchRepo,
+		allianceRepo,
+		logger,
+	)
+
 	return &ConstructionService{
 		villageRepo:        villageRepo,
 		buildingConfigRepo: buildingConfigRepo,
+		researchRepo:       researchRepo,
+		allianceRepo:       allianceRepo,
 		redisService:       redisService,
 		logger:             logger,
 		timeZone:           timeZone,
+		requirementsEngine: requirementsEngine,
+		wsManager:          nil, // Se establecerá después con SetWebSocketManager
 	}
 }
 
-// CheckBuildingRequirements verifica los requisitos para construir usando la función avanzada de la BD
-func (s *ConstructionService) CheckBuildingRequirements(villageID uuid.UUID, buildingType string, targetLevel int) (*BuildingRequirementsResult, error) {
-	// Usar la función avanzada de la base de datos a través del repositorio
-	rows, err := s.villageRepo.CheckBuildingRequirementsAdvanced(villageID, buildingType, targetLevel)
+// SetWebSocketManager establece el WebSocket manager para notificaciones en tiempo real
+func (s *ConstructionService) SetWebSocketManager(wsManager *websocket.Manager) {
+	s.wsManager = wsManager
+	s.logger.Info("WebSocket manager configurado en ConstructionService")
+}
+
+// CheckBuildingRequirements verifica los requisitos para construir usando la nueva lógica Go
+func (s *ConstructionService) CheckBuildingRequirements(villageID uuid.UUID, buildingType string, targetLevel int) (*BuildingRequirementsResultLegacy, error) {
+	// Usar el nuevo motor de requisitos en Go
+	result, err := s.requirementsEngine.CheckBuildingRequirements(villageID, buildingType, targetLevel)
 	if err != nil {
 		return nil, fmt.Errorf("error verificando requisitos: %w", err)
 	}
-	defer rows.Close()
 
-	if !rows.Next() {
-		return nil, errors.New("no se pudo verificar los requisitos")
-	}
-
-	var result BuildingRequirementsResult
-	var missingReqs []string
-	err = rows.Scan(
-		&result.CanBuild,
-		&missingReqs,
-		&result.CostWood,
-		&result.CostStone,
-		&result.CostFood,
-		&result.CostGold,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("error escaneando resultado: %w", err)
-	}
-
-	result.MissingRequirements = missingReqs
-	return &result, nil
+	// Convertir el resultado al formato esperado por el handler
+	return &BuildingRequirementsResultLegacy{
+		CanBuild:            result.CanBuild,
+		MissingRequirements: result.MissingRequirements,
+		CostWood:            result.CostWood,
+		CostStone:           result.CostStone,
+		CostFood:            result.CostFood,
+		CostGold:            result.CostGold,
+	}, nil
 }
 
 // UpgradeBuilding maneja la mejora de un edificio usando la nueva función avanzada
-func (s *ConstructionService) UpgradeBuilding(villageID uuid.UUID, buildingType string) (*models.BuildingUpgradeResult, error) {
+func (s *ConstructionService) UpgradeBuilding(villageID uuid.UUID, buildingType string) (*models.BuildingUpgradeResultLegacy, error) {
 	// Obtener la aldea con todos sus detalles
 	village, err := s.villageRepo.GetVillageByID(villageID)
 	if err != nil {
@@ -121,6 +148,15 @@ func (s *ConstructionService) UpgradeBuilding(villageID uuid.UUID, buildingType 
 	// Verificar que no esté ya siendo mejorado
 	if building.IsUpgrading {
 		return nil, ErrBuildingUpgrading
+	}
+
+	// Verificar límite de cola de construcción
+	canStart, err := s.canStartConstruction(villageID)
+	if err != nil {
+		return nil, err
+	}
+	if !canStart {
+		return nil, ErrConstructionQueueFull
 	}
 
 	// Obtener el nivel máximo disponible
@@ -146,7 +182,7 @@ func (s *ConstructionService) UpgradeBuilding(villageID uuid.UUID, buildingType 
 	}
 
 	// Verificar que hay suficientes recursos
-	if !s.hasEnoughResources(village.Resources, models.ResourceCosts{
+	if !s.hasEnoughResources(village.Resources, models.ResourceCostsLegacy{
 		Wood:  requirements.CostWood,
 		Stone: requirements.CostStone,
 		Food:  requirements.CostFood,
@@ -199,18 +235,27 @@ func (s *ConstructionService) UpgradeBuilding(villageID uuid.UUID, buildingType 
 		zap.Duration("upgrade_time", upgradeTime),
 	)
 
-	return &models.BuildingUpgradeResult{
+	// Enviar notificación de inicio de mejora
+	costs := models.ResourceCostsLegacy{
+		Wood:  requirements.CostWood,
+		Stone: requirements.CostStone,
+		Food:  requirements.CostFood,
+		Gold:  requirements.CostGold,
+	}
+	s.sendBuildingUpgradeStarted(villageID, buildingType, nextLevel, upgradeTime, completionTime, costs)
+
+	return &models.BuildingUpgradeResultLegacy{
 		BuildingType:   buildingType,
 		NewLevel:       nextLevel,
 		UpgradeTime:    upgradeTime,
 		CompletionTime: completionTime,
-		Costs: models.ResourceCosts{
+		Costs: models.ResourceCostsLegacy{
 			Wood:  requirements.CostWood,
 			Stone: requirements.CostStone,
 			Food:  requirements.CostFood,
 			Gold:  requirements.CostGold,
 		},
-		ResourcesSpent: models.ResourceCosts{
+		ResourcesSpent: models.ResourceCostsLegacy{
 			Wood:  requirements.CostWood,
 			Stone: requirements.CostStone,
 			Food:  requirements.CostFood,
@@ -297,6 +342,9 @@ func (s *ConstructionService) CompleteUpgrade(villageID uuid.UUID, buildingType 
 		zap.Int("new_level", building.Level),
 	)
 
+	// Enviar notificación de finalización de mejora
+	s.sendBuildingUpgradeCompleted(villageID, buildingType, building.Level)
+
 	return nil
 }
 
@@ -356,7 +404,7 @@ func (s *ConstructionService) calculateConstructionTime(buildingType string, lev
 }
 
 // hasEnoughResources verifica si hay suficientes recursos
-func (s *ConstructionService) hasEnoughResources(resources models.Resources, costs models.ResourceCosts) bool {
+func (s *ConstructionService) hasEnoughResources(resources models.Resources, costs models.ResourceCostsLegacy) bool {
 	return resources.Wood >= costs.Wood &&
 		resources.Stone >= costs.Stone &&
 		resources.Food >= costs.Food &&
@@ -413,41 +461,464 @@ func (s *ConstructionService) GetConstructionQueue(villageID uuid.UUID) ([]Const
 	return []ConstructionQueueItem{}, nil
 }
 
-// CancelUpgrade cancela la mejora de un edificio
-func (s *ConstructionService) CancelUpgrade(villageID uuid.UUID, buildingType string) error {
-	village, err := s.villageRepo.GetVillageByID(villageID)
-	if err != nil {
-		return err
-	}
-	if village == nil {
-		return errors.New("aldea no encontrada")
-	}
-
-	building, exists := village.Buildings[buildingType]
-	if !exists {
-		return ErrInvalidBuildingType
-	}
-
-	if !building.IsUpgrading {
-		return errors.New("el edificio no está siendo mejorado")
-	}
-
-	// Cancelar la mejora
-	err = s.villageRepo.UpdateBuilding(
-		villageID,
-		buildingType,
-		building.Level,
-		false, // isUpgrading
-		nil,   // completionTime
-	)
-	if err != nil {
-		return err
-	}
-
-	s.logger.Info("Mejora de edificio cancelada",
+// CancelUpgradeWithRefund cancela la mejora de un edificio y devuelve el 50% de los recursos
+func (s *ConstructionService) CancelUpgradeWithRefund(villageID uuid.UUID, buildingType string) (*models.CancelUpgradeResult, error) {
+	s.logger.Info("Iniciando cancelación de mejora con reembolso",
 		zap.String("village_id", villageID.String()),
 		zap.String("building_type", buildingType),
 	)
 
-	return nil
+	// 1. Obtener información de la aldea
+	village, err := s.villageRepo.GetVillageByID(villageID)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo aldea: %w", err)
+	}
+	if village == nil {
+		return nil, errors.New("aldea no encontrada")
+	}
+
+	// 2. Verificar que el edificio existe y está siendo mejorado
+	building, exists := village.Buildings[buildingType]
+	if !exists {
+		return nil, ErrInvalidBuildingType
+	}
+
+	if !building.IsUpgrading {
+		return nil, errors.New("el edificio no está siendo mejorado")
+	}
+
+	// 3. Calcular recursos gastados (nivel actual + 1)
+	targetLevel := building.Level + 1
+	config, err := s.buildingConfigRepo.GetBuildingConfig(buildingType, targetLevel)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo configuración del edificio: %w", err)
+	}
+	if config == nil {
+		return nil, fmt.Errorf("configuración de edificio no encontrada para %s nivel %d", buildingType, targetLevel)
+	}
+
+	// 4. Calcular reembolso (50% de recursos gastados)
+	refundPercentage := 0.5
+	refundAmount := models.ResourceCostsLegacy{
+		Wood:  int(float64(config.WoodCost) * refundPercentage),
+		Stone: int(float64(config.StoneCost) * refundPercentage),
+		Food:  int(float64(config.FoodCost) * refundPercentage),
+		Gold:  int(float64(config.GoldCost) * refundPercentage),
+	}
+
+	originalCost := models.ResourceCostsLegacy{
+		Wood:  config.WoodCost,
+		Stone: config.StoneCost,
+		Food:  config.FoodCost,
+		Gold:  config.GoldCost,
+	}
+
+	// 5. Calcular tiempo restante
+	var timeRemaining time.Duration
+	if building.UpgradeCompletionTime != nil {
+		timeRemaining = time.Until(*building.UpgradeCompletionTime)
+		if timeRemaining < 0 {
+			timeRemaining = 0
+		}
+	}
+
+	// 6. Actualizar recursos (agregar reembolso)
+	newWood := village.Resources.Wood + refundAmount.Wood
+	newStone := village.Resources.Stone + refundAmount.Stone
+	newFood := village.Resources.Food + refundAmount.Food
+	newGold := village.Resources.Gold + refundAmount.Gold
+
+	err = s.villageRepo.UpdateResources(villageID, newWood, newStone, newFood, newGold)
+	if err != nil {
+		return nil, fmt.Errorf("error actualizando recursos: %w", err)
+	}
+
+	// 7. Cancelar la mejora (volver al nivel anterior)
+	err = s.villageRepo.UpdateBuilding(
+		villageID,
+		buildingType,
+		building.Level, // Mantener nivel actual
+		false,          // isUpgrading = false
+		nil,            // completionTime = nil
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error cancelando mejora: %w", err)
+	}
+
+	// 8. Crear resultado
+	result := &models.CancelUpgradeResult{
+		BuildingType:     buildingType,
+		RefundAmount:     refundAmount,
+		RefundPercentage: refundPercentage * 100, // Convertir a porcentaje
+		OriginalCost:     originalCost,
+		CancelledAt:      time.Now(),
+		TimeRemaining:    timeRemaining,
+		RefundReason:     "Cancelación voluntaria por el jugador",
+	}
+
+	s.logger.Info("Mejora cancelada exitosamente con reembolso",
+		zap.String("village_id", villageID.String()),
+		zap.String("building_type", buildingType),
+		zap.Int("refund_wood", refundAmount.Wood),
+		zap.Int("refund_stone", refundAmount.Stone),
+		zap.Int("refund_food", refundAmount.Food),
+		zap.Int("refund_gold", refundAmount.Gold),
+		zap.Float64("refund_percentage", refundPercentage*100),
+	)
+
+	// Enviar notificación de cancelación de mejora
+	s.sendBuildingUpgradeCancelled(villageID, buildingType, refundAmount, refundPercentage*100)
+
+	return result, nil
+}
+
+// ===== MÉTODOS DE NOTIFICACIÓN WEBSOCKET =====
+
+// sendBuildingUpgradeStarted envía notificación de inicio de mejora
+func (s *ConstructionService) sendBuildingUpgradeStarted(villageID uuid.UUID, buildingType string, targetLevel int, upgradeTime time.Duration, completionTime time.Time, costs models.ResourceCostsLegacy) {
+	if s.wsManager == nil {
+		return
+	}
+
+	// Obtener información del jugador propietario
+	village, err := s.villageRepo.GetVillageByID(villageID)
+	if err != nil || village == nil {
+		s.logger.Error("Error obteniendo aldea para notificación", zap.Error(err))
+		return
+	}
+
+	message := websocket.WSMessage{
+		Type: "building_upgrade_started",
+		Data: map[string]interface{}{
+			"village_id":       villageID.String(),
+			"building_type":    buildingType,
+			"target_level":     targetLevel,
+			"upgrade_time":     upgradeTime.String(),
+			"completion_time":  completionTime.Format(time.RFC3339),
+			"costs":            costs,
+			"timestamp":        time.Now().Unix(),
+		},
+		Time: time.Now(),
+	}
+
+	s.wsManager.SendToUser(village.Village.PlayerID.String(), "building_upgrade_started", message.Data)
+
+	s.logger.Info("Notificación de inicio de mejora enviada",
+		zap.String("village_id", villageID.String()),
+		zap.String("building_type", buildingType),
+		zap.String("player_id", village.Village.PlayerID.String()),
+	)
+}
+
+// sendBuildingProgressUpdate envía actualización de progreso de mejora
+func (s *ConstructionService) sendBuildingProgressUpdate(villageID uuid.UUID, buildingType string, timeRemaining time.Duration, progressPercent float64) {
+	if s.wsManager == nil {
+		return
+	}
+
+	// Obtener información del jugador propietario
+	village, err := s.villageRepo.GetVillageByID(villageID)
+	if err != nil || village == nil {
+		s.logger.Error("Error obteniendo aldea para notificación de progreso", zap.Error(err))
+		return
+	}
+
+	message := websocket.WSMessage{
+		Type: "building_progress",
+		Data: map[string]interface{}{
+			"village_id":       villageID.String(),
+			"building_type":    buildingType,
+			"time_remaining":   timeRemaining.String(),
+			"progress_percent": progressPercent,
+			"timestamp":        time.Now().Unix(),
+		},
+		Time: time.Now(),
+	}
+
+	s.wsManager.SendToUser(village.Village.PlayerID.String(), "building_progress", message.Data)
+}
+
+// sendBuildingUpgradeCompleted envía notificación de finalización de mejora
+func (s *ConstructionService) sendBuildingUpgradeCompleted(villageID uuid.UUID, buildingType string, newLevel int) {
+	if s.wsManager == nil {
+		return
+	}
+
+	// Obtener información del jugador propietario
+	village, err := s.villageRepo.GetVillageByID(villageID)
+	if err != nil || village == nil {
+		s.logger.Error("Error obteniendo aldea para notificación de finalización", zap.Error(err))
+		return
+	}
+
+	// Obtener efectos del edificio mejorado
+	config, err := s.buildingConfigRepo.GetBuildingConfig(buildingType, newLevel)
+	var effects map[string]interface{}
+	if err == nil && config != nil {
+		effects = map[string]interface{}{
+			"storage_capacity": config.StorageCapacity,
+			"production_per_hour": config.ProductionPerHour,
+			"build_time_seconds": config.BuildTimeSeconds,
+			"construction_speed_modifier": config.ConstructionSpeedModifier,
+		}
+	}
+
+	message := websocket.WSMessage{
+		Type: "building_upgrade_completed",
+		Data: map[string]interface{}{
+			"village_id":       villageID.String(),
+			"building_type":    buildingType,
+			"new_level":        newLevel,
+			"completion_time":  time.Now().Format(time.RFC3339),
+			"effects":          effects,
+			"timestamp":        time.Now().Unix(),
+		},
+		Time: time.Now(),
+	}
+
+	s.wsManager.SendToUser(village.Village.PlayerID.String(), "building_upgrade_completed", message.Data)
+
+	s.logger.Info("Notificación de finalización de mejora enviada",
+		zap.String("village_id", villageID.String()),
+		zap.String("building_type", buildingType),
+		zap.Int("new_level", newLevel),
+		zap.String("player_id", village.Village.PlayerID.String()),
+	)
+}
+
+// sendBuildingUpgradeCancelled envía notificación de cancelación de mejora
+func (s *ConstructionService) sendBuildingUpgradeCancelled(villageID uuid.UUID, buildingType string, refundAmount models.ResourceCostsLegacy, refundPercentage float64) {
+	if s.wsManager == nil {
+		return
+	}
+
+	// Obtener información del jugador propietario
+	village, err := s.villageRepo.GetVillageByID(villageID)
+	if err != nil || village == nil {
+		s.logger.Error("Error obteniendo aldea para notificación de cancelación", zap.Error(err))
+		return
+	}
+
+	message := websocket.WSMessage{
+		Type: "building_upgrade_cancelled",
+		Data: map[string]interface{}{
+			"village_id":        villageID.String(),
+			"building_type":    buildingType,
+			"refund_amount":    refundAmount,
+			"refund_percentage": refundPercentage,
+			"cancelled_at":     time.Now().Format(time.RFC3339),
+			"timestamp":        time.Now().Unix(),
+		},
+		Time: time.Now(),
+	}
+
+	s.wsManager.SendToUser(village.Village.PlayerID.String(), "building_upgrade_cancelled", message.Data)
+
+	s.logger.Info("Notificación de cancelación de mejora enviada",
+		zap.String("village_id", villageID.String()),
+		zap.String("building_type", buildingType),
+		zap.String("player_id", village.Village.PlayerID.String()),
+	)
+}
+
+// calculateProgressPercent calcula el porcentaje de progreso de una mejora
+func (s *ConstructionService) calculateProgressPercent(building *models.Building, timeRemaining time.Duration) float64 {
+	if building.UpgradeCompletionTime == nil {
+		return 0
+	}
+
+	// Calcular tiempo total de la mejora
+	totalTime := time.Until(*building.UpgradeCompletionTime) + timeRemaining
+	if totalTime <= 0 {
+		return 100
+	}
+
+	// Calcular porcentaje completado
+	elapsedTime := totalTime - timeRemaining
+	progressPercent := (float64(elapsedTime) / float64(totalTime)) * 100
+
+	if progressPercent < 0 {
+		return 0
+	}
+	if progressPercent > 100 {
+		return 100
+	}
+
+	return progressPercent
+}
+
+// ===== SISTEMA DE ACTUALIZACIONES PERIÓDICAS =====
+
+// StartProgressUpdates inicia el sistema de actualizaciones periódicas de progreso
+func (s *ConstructionService) StartProgressUpdates() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second) // Actualizar cada 30 segundos
+		defer ticker.Stop()
+
+		s.logger.Info("Sistema de actualizaciones de progreso de mejoras iniciado",
+			zap.Duration("interval", 30*time.Second),
+		)
+
+		for {
+			select {
+			case <-ticker.C:
+				s.updateAllBuildingProgress()
+			}
+		}
+	}()
+}
+
+// updateAllBuildingProgress actualiza el progreso de todas las mejoras activas
+func (s *ConstructionService) updateAllBuildingProgress() {
+	// Obtener todas las aldeas con mejoras en progreso
+	villages, err := s.villageRepo.GetAllVillages()
+	if err != nil {
+		s.logger.Error("Error obteniendo aldeas para actualización de progreso", zap.Error(err))
+		return
+	}
+
+	updatedCount := 0
+	for _, village := range villages {
+		for buildingType, building := range village.Buildings {
+			if building.IsUpgrading && building.UpgradeCompletionTime != nil {
+				timeRemaining := time.Until(*building.UpgradeCompletionTime)
+				
+				// Solo enviar actualización si aún queda tiempo
+				if timeRemaining > 0 {
+					progressPercent := s.calculateProgressPercent(building, timeRemaining)
+					s.sendBuildingProgressUpdate(village.Village.ID, buildingType, timeRemaining, progressPercent)
+					updatedCount++
+				}
+			}
+		}
+	}
+
+	if updatedCount > 0 {
+		s.logger.Debug("Actualizaciones de progreso enviadas",
+			zap.Int("buildings_updated", updatedCount),
+		)
+	}
+}
+
+// GetVillagesWithActiveUpgrades obtiene aldeas con mejoras activas (método auxiliar)
+func (s *ConstructionService) GetVillagesWithActiveUpgrades() ([]*models.VillageWithDetails, error) {
+	villages, err := s.villageRepo.GetAllVillages()
+	if err != nil {
+		return nil, err
+	}
+
+	var activeVillages []*models.VillageWithDetails
+	for _, village := range villages {
+		hasActiveUpgrades := false
+		for _, building := range village.Buildings {
+			if building.IsUpgrading {
+				hasActiveUpgrades = true
+				break
+			}
+		}
+		if hasActiveUpgrades {
+			activeVillages = append(activeVillages, village)
+		}
+	}
+
+	return activeVillages, nil
+}
+
+// ===== MÉTODOS DE GESTIÓN DE COLA DE CONSTRUCCIÓN =====
+
+// getActiveConstructionCount cuenta cuántos edificios están siendo mejorados en una aldea
+func (s *ConstructionService) getActiveConstructionCount(villageID uuid.UUID) (int, error) {
+	village, err := s.villageRepo.GetVillageByID(villageID)
+	if err != nil {
+		return 0, err
+	}
+	if village == nil {
+		return 0, errors.New("aldea no encontrada")
+	}
+
+	count := 0
+	for _, building := range village.Buildings {
+		if building.IsUpgrading {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
+// canStartConstruction verifica si se puede iniciar una nueva construcción
+func (s *ConstructionService) canStartConstruction(villageID uuid.UUID) (bool, error) {
+	activeCount, err := s.getActiveConstructionCount(villageID)
+	if err != nil {
+		return false, err
+	}
+
+	// Verificar si hay slots disponibles
+	return activeCount < ActiveConstructionSlots, nil
+}
+
+// GetConstructionQueueStatus obtiene el estado actual de la cola de construcción
+func (s *ConstructionService) GetConstructionQueueStatus(villageID uuid.UUID) (*ConstructionQueueStatus, error) {
+	activeCount, err := s.getActiveConstructionCount(villageID)
+	if err != nil {
+		return nil, err
+	}
+
+	village, err := s.villageRepo.GetVillageByID(villageID)
+	if err != nil {
+		return nil, err
+	}
+	if village == nil {
+		return nil, errors.New("aldea no encontrada")
+	}
+
+	// Obtener edificios en construcción con detalles
+	buildingsInConstruction := []BuildingConstructionInfo{}
+	for buildingType, building := range village.Buildings {
+		if building.IsUpgrading {
+			timeRemaining := time.Duration(0)
+			if building.UpgradeCompletionTime != nil {
+				timeRemaining = time.Until(*building.UpgradeCompletionTime)
+				if timeRemaining < 0 {
+					timeRemaining = 0
+				}
+			}
+
+			buildingsInConstruction = append(buildingsInConstruction, BuildingConstructionInfo{
+				BuildingType:     buildingType,
+				CurrentLevel:     building.Level,
+				TargetLevel:      building.Level + 1,
+				TimeRemaining:    timeRemaining,
+				ProgressPercent:  s.calculateProgressPercent(building, timeRemaining),
+				CompletionTime:   building.UpgradeCompletionTime,
+			})
+		}
+	}
+
+	return &ConstructionQueueStatus{
+		ActiveSlots:           ActiveConstructionSlots,
+		MaxSlots:              MaxConstructionSlots,
+		AvailableSlots:       ActiveConstructionSlots - activeCount,
+		BuildingsInConstruction: buildingsInConstruction,
+		CanStartConstruction:  activeCount < ActiveConstructionSlots,
+	}, nil
+}
+
+// ConstructionQueueStatus representa el estado de la cola de construcción
+type ConstructionQueueStatus struct {
+	ActiveSlots            int                      `json:"active_slots"`
+	MaxSlots               int                      `json:"max_slots"`
+	AvailableSlots         int                      `json:"available_slots"`
+	BuildingsInConstruction []BuildingConstructionInfo `json:"buildings_in_construction"`
+	CanStartConstruction   bool                     `json:"can_start_construction"`
+}
+
+// BuildingConstructionInfo representa información de un edificio en construcción
+type BuildingConstructionInfo struct {
+	BuildingType     string         `json:"building_type"`
+	CurrentLevel     int            `json:"current_level"`
+	TargetLevel      int            `json:"target_level"`
+	TimeRemaining    time.Duration  `json:"time_remaining"`
+	ProgressPercent  float64        `json:"progress_percent"`
+	CompletionTime   *time.Time     `json:"completion_time,omitempty"`
 }

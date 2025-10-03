@@ -8,6 +8,7 @@ import (
 	"server-backend/models"
 	"server-backend/repository"
 
+	"github.com/gin-gonic/gin"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -25,22 +26,22 @@ func NewAllianceHandler(allianceRepo *repository.AllianceRepository, logger *zap
 }
 
 // CreateAlliance crea una nueva alianza
-func (h *AllianceHandler) CreateAlliance(w http.ResponseWriter, r *http.Request) {
+func (h *AllianceHandler) CreateAlliance(c *gin.Context) {
 	var alliance models.Alliance
-	if err := json.NewDecoder(r.Body).Decode(&alliance); err != nil {
+	if err := c.ShouldBindJSON(&alliance); err != nil {
 		h.logger.Error("Error decodificando request", zap.Error(err))
-		http.Error(w, "Error decodificando request", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decodificando request"})
 		return
 	}
 
 	// Obtener playerID del contexto (seteado por el middleware de auth)
-	playerID := r.Context().Value("playerID").(int)
+	playerID := c.GetInt("playerID")
 	alliance.LeaderID = playerID
 
 	createdAlliance, err := h.allianceRepo.CreateAlliance(&alliance)
 	if err != nil {
 		h.logger.Error("Error creando alianza", zap.Error(err))
-		http.Error(w, "Error creando alianza", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creando alianza"})
 		return
 	}
 
@@ -56,64 +57,60 @@ func (h *AllianceHandler) CreateAlliance(w http.ResponseWriter, r *http.Request)
 		h.logger.Error("Error agregando líder como miembro", zap.Error(err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(createdAlliance)
+	c.JSON(http.StatusCreated, createdAlliance)
 }
 
 // GetAlliances lista todas las alianzas
-func (h *AllianceHandler) GetAlliances(w http.ResponseWriter, r *http.Request) {
+func (h *AllianceHandler) GetAlliances(c *gin.Context) {
 	alliances, err := h.allianceRepo.GetAlliances()
 	if err != nil {
 		h.logger.Error("Error obteniendo alianzas", zap.Error(err))
-		http.Error(w, "Error obteniendo alianzas", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error obteniendo alianzas"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(alliances)
+	c.JSON(http.StatusOK, alliances)
 }
 
 // GetAlliance obtiene una alianza específica
-func (h *AllianceHandler) GetAlliance(w http.ResponseWriter, r *http.Request) {
-	allianceID, err := strconv.Atoi(chi.URLParam(r, "allianceID"))
+func (h *AllianceHandler) GetAlliance(c *gin.Context) {
+	allianceID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		http.Error(w, "ID de alianza inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de alianza inválido"})
 		return
 	}
 
 	alliance, err := h.allianceRepo.GetAlliance(allianceID)
 	if err != nil {
 		h.logger.Error("Error obteniendo alianza", zap.Error(err))
-		http.Error(w, "Alianza no encontrada", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Alianza no encontrada"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(alliance)
+	c.JSON(http.StatusOK, alliance)
 }
 
 // UpdateAlliance actualiza una alianza
-func (h *AllianceHandler) UpdateAlliance(w http.ResponseWriter, r *http.Request) {
-	allianceID, err := strconv.Atoi(chi.URLParam(r, "allianceID"))
+func (h *AllianceHandler) UpdateAlliance(c *gin.Context) {
+	allianceID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		http.Error(w, "ID de alianza inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de alianza inválido"})
 		return
 	}
 
-	playerID := r.Context().Value("playerID").(int)
+	playerID := c.GetInt("playerID")
 
 	// Verificar que el jugador sea líder de la alianza
 	isLeader, err := h.allianceRepo.IsPlayerLeader(allianceID, playerID)
 	if err != nil || !isLeader {
-		http.Error(w, "No autorizado", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No autorizado"})
 		return
 	}
 
 	var alliance models.Alliance
-	if err := json.NewDecoder(r.Body).Decode(&alliance); err != nil {
+	if err := c.ShouldBindJSON(&alliance); err != nil {
 		h.logger.Error("Error decodificando request", zap.Error(err))
-		http.Error(w, "Error decodificando request", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decodificando request"})
 		return
 	}
 
@@ -121,12 +118,11 @@ func (h *AllianceHandler) UpdateAlliance(w http.ResponseWriter, r *http.Request)
 	updatedAlliance, err := h.allianceRepo.UpdateAlliance(&alliance)
 	if err != nil {
 		h.logger.Error("Error actualizando alianza", zap.Error(err))
-		http.Error(w, "Error actualizando alianza", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error actualizando alianza"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updatedAlliance)
+	c.JSON(http.StatusOK, updatedAlliance)
 }
 
 // DeleteAlliance elimina una alianza
@@ -156,38 +152,37 @@ func (h *AllianceHandler) DeleteAlliance(w http.ResponseWriter, r *http.Request)
 }
 
 // GetMembers obtiene los miembros de una alianza
-func (h *AllianceHandler) GetMembers(w http.ResponseWriter, r *http.Request) {
-	allianceID, err := strconv.Atoi(chi.URLParam(r, "allianceID"))
+func (h *AllianceHandler) GetMembers(c *gin.Context) {
+	allianceID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		http.Error(w, "ID de alianza inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de alianza inválido"})
 		return
 	}
 
 	members, err := h.allianceRepo.GetAllianceMembers(allianceID)
 	if err != nil {
 		h.logger.Error("Error obteniendo miembros", zap.Error(err))
-		http.Error(w, "Error obteniendo miembros", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error obteniendo miembros"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(members)
+	c.JSON(http.StatusOK, members)
 }
 
 // JoinAlliance permite a un jugador unirse a una alianza
-func (h *AllianceHandler) JoinAlliance(w http.ResponseWriter, r *http.Request) {
-	allianceID, err := strconv.Atoi(chi.URLParam(r, "allianceID"))
+func (h *AllianceHandler) JoinAlliance(c *gin.Context) {
+	allianceID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		http.Error(w, "ID de alianza inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de alianza inválido"})
 		return
 	}
 
-	playerID := r.Context().Value("playerID").(int)
+	playerID := c.GetInt("playerID")
 
 	// Verificar que el jugador no esté ya en una alianza
 	currentAlliance, err := h.allianceRepo.GetPlayerAlliance(playerID)
 	if err == nil && currentAlliance != nil {
-		http.Error(w, "Ya perteneces a una alianza", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Ya perteneces a una alianza"})
 		return
 	}
 
@@ -199,44 +194,44 @@ func (h *AllianceHandler) JoinAlliance(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.allianceRepo.AddMember(&member); err != nil {
 		h.logger.Error("Error uniéndose a la alianza", zap.Error(err))
-		http.Error(w, "Error uniéndose a la alianza", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error uniéndose a la alianza"})
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
+	c.JSON(http.StatusCreated, gin.H{"message": "Te has unido a la alianza"})
 }
 
 // LeaveAlliance permite a un jugador salir de una alianza
-func (h *AllianceHandler) LeaveAlliance(w http.ResponseWriter, r *http.Request) {
-	allianceID, err := strconv.Atoi(chi.URLParam(r, "allianceID"))
+func (h *AllianceHandler) LeaveAlliance(c *gin.Context) {
+	allianceID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		http.Error(w, "ID de alianza inválido", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID de alianza inválido"})
 		return
 	}
 
-	playerID := r.Context().Value("playerID").(int)
+	playerID := c.GetInt("playerID")
 
 	// Verificar que el jugador sea miembro de la alianza
 	isMember, err := h.allianceRepo.IsPlayerMember(allianceID, playerID)
 	if err != nil || !isMember {
-		http.Error(w, "No eres miembro de esta alianza", http.StatusForbidden)
+		c.JSON(http.StatusForbidden, gin.H{"error": "No eres miembro de esta alianza"})
 		return
 	}
 
 	// Verificar que no sea el líder (los líderes no pueden salir)
 	isLeader, err := h.allianceRepo.IsPlayerLeader(allianceID, playerID)
 	if err == nil && isLeader {
-		http.Error(w, "Los líderes no pueden salir de la alianza", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Los líderes no pueden salir de la alianza"})
 		return
 	}
 
 	if err := h.allianceRepo.RemoveMember(allianceID, playerID); err != nil {
 		h.logger.Error("Error saliendo de la alianza", zap.Error(err))
-		http.Error(w, "Error saliendo de la alianza", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saliendo de la alianza"})
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	c.JSON(http.StatusOK, gin.H{"message": "Has salido de la alianza"})
 }
 
 // PromoteMember promueve a un miembro a oficial

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"server-backend/config"
 	"server-backend/handlers"
 	"server-backend/middleware"
 
@@ -43,17 +44,11 @@ func NewServer(
 		worldHandler:   worldHandler,
 		villageHandler: villageHandler,
 		authMiddleware: authMiddleware,
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-			CheckOrigin: func(r *http.Request) bool {
-				return true // En producción, configurar esto adecuadamente
-			},
-		},
-		clients:    make(map[*websocket.Conn]bool),
-		broadcast:  make(chan []byte),
-		register:   make(chan *websocket.Conn),
-		unregister: make(chan *websocket.Conn),
+		upgrader:       config.GetWebSocketUpgrader(),
+		clients:        make(map[*websocket.Conn]bool),
+		broadcast:      make(chan []byte),
+		register:       make(chan *websocket.Conn),
+		unregister:     make(chan *websocket.Conn),
 	}
 
 	s.setupRoutes()
@@ -193,8 +188,16 @@ func (s *Server) handleClientMessages(conn *websocket.Conn) {
 		s.unregister <- conn
 	}()
 
+	// Crear validador de mensajes
+	validator := middleware.NewWebSocketValidator(s.logger)
+	clientInfo := conn.RemoteAddr().String()
+
+	// Configurar timeouts
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+
 	for {
-		_, message, err := conn.ReadMessage()
+		messageType, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				s.logger.Error("Error al leer mensaje", zap.Error(err))
@@ -202,8 +205,31 @@ func (s *Server) handleClientMessages(conn *websocket.Conn) {
 			break
 		}
 
+		// Log del mensaje recibido
+		validator.LogMessageReceived(message, clientInfo)
+
+		// Validar tipo de mensaje
+		if !validator.IsValidMessageType(messageType) {
+			validator.SendError(conn, "Solo se permiten mensajes de texto")
+			continue
+		}
+
+		// Validar mensaje
+		_, err = validator.ValidateMessage(message)
+		if err != nil {
+			s.logger.Warn("Mensaje inválido recibido",
+				zap.Error(err),
+				zap.String("message", string(message)),
+				zap.String("client", clientInfo))
+			validator.SendError(conn, fmt.Sprintf("Mensaje inválido: %s", err.Error()))
+			continue
+		}
+
 		// Procesar el mensaje recibido
 		s.broadcast <- message
+
+		// Actualizar deadline de lectura
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	}
 }
 

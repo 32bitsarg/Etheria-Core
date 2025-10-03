@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"server-backend/models"
 	"server-backend/repository"
 	"time"
@@ -15,6 +16,7 @@ type ResourceService struct {
 	logger             *zap.Logger
 	wsManager          interface{}
 	redisService       *RedisService
+	metrics            *models.ResourceMetrics
 }
 
 func NewResourceService(villageRepo *repository.VillageRepository, buildingConfigRepo *repository.BuildingConfigRepository, logger *zap.Logger, redisService *RedisService) *ResourceService {
@@ -23,6 +25,14 @@ func NewResourceService(villageRepo *repository.VillageRepository, buildingConfi
 		buildingConfigRepo: buildingConfigRepo,
 		logger:             logger,
 		redisService:       redisService,
+		metrics: &models.ResourceMetrics{
+			WebSocketNotifications: 0,
+			PollingRequests:        0,
+			UpdateErrors:          0,
+			LastUpdate:            time.Now(),
+			TotalUpdates:         0,
+			SuccessRate:          0.0,
+		},
 	}
 }
 
@@ -117,24 +127,61 @@ func (s *ResourceService) CalculateStorageCapacity(village *models.VillageWithDe
 func (s *ResourceService) UpdateResources(villageID uuid.UUID) error {
 	village, err := s.villageRepo.GetVillageByID(villageID)
 	if err != nil {
+		s.logger.Error("Error obteniendo aldea para actualizar recursos",
+			zap.String("village_id", villageID.String()),
+			zap.Error(err),
+		)
 		return err
 	}
 	if village == nil {
+		s.logger.Warn("Aldea no encontrada para actualizar recursos",
+			zap.String("village_id", villageID.String()),
+		)
 		return nil
 	}
 
 	// Calcular producción por hora
 	production := s.CalculateProduction(village)
 
+	// Log de diagnóstico de producción
+	s.logger.Info("Calculando producción de recursos",
+		zap.String("village_id", villageID.String()),
+		zap.String("village_name", village.Village.Name),
+		zap.Int("wood_production", production.Wood),
+		zap.Int("stone_production", production.Stone),
+		zap.Int("food_production", production.Food),
+		zap.Int("gold_production", production.Gold),
+		zap.Int("buildings_count", len(village.Buildings)),
+	)
+
 	// Calcular tiempo transcurrido desde la última actualización
 	now := time.Now()
 	lastUpdate := village.Resources.LastUpdated
 	if lastUpdate.IsZero() {
 		lastUpdate = now
+		s.logger.Info("Primera actualización de recursos - inicializando last_updated",
+			zap.String("village_id", villageID.String()),
+		)
 	}
 
 	elapsedHours := now.Sub(lastUpdate).Hours()
-	if elapsedHours < 0.01 { // Mínimo 36 segundos
+
+	// Log de diagnóstico de tiempo
+	s.logger.Info("Verificando tiempo transcurrido",
+		zap.String("village_id", villageID.String()),
+		zap.Time("last_update", lastUpdate),
+		zap.Time("now", now),
+		zap.Float64("elapsed_hours", elapsedHours),
+		zap.Float64("min_required", 0.1),
+	)
+
+	if elapsedHours < 0.1 { // Mínimo 6 minutos (más realista)
+		s.logger.Info("Recursos no actualizados - tiempo insuficiente",
+			zap.String("village_id", villageID.String()),
+			zap.Float64("elapsed_hours", elapsedHours),
+			zap.Float64("min_required", 0.1),
+			zap.String("reason", "Esperando más tiempo para generar recursos"),
+		)
 		return nil
 	}
 
@@ -186,13 +233,64 @@ func (s *ResourceService) UpdateResources(villageID uuid.UUID) error {
 		s.redisService.StorePlayerResources(villageID.String(), res)
 	}
 
-	s.logger.Debug("Recursos actualizados",
+	// ✅ NUEVO: Notificación WebSocket
+	if s.wsManager != nil {
+		// Obtener información del jugador para notificación específica
+		village, err := s.villageRepo.GetVillageByID(villageID)
+		if err == nil && village != nil {
+			resourceUpdate := models.ResourceUpdate{
+				VillageID:      villageID,
+				Wood:           newWood,
+				Stone:          newStone,
+				Food:           newFood,
+				Gold:           newGold,
+				WoodGenerated:  woodGenerated,
+				StoneGenerated: stoneGenerated,
+				FoodGenerated:  foodGenerated,
+				GoldGenerated:  goldGenerated,
+				Capacity:       capacity,
+				LastUpdate:     time.Now(),
+				ElapsedHours:   elapsedHours,
+			}
+			
+			// Notificar al jugador específico
+			if wsManager, ok := s.wsManager.(interface {
+				SendResourceUpdateToUser(userID string, villageID string, resources models.ResourceUpdate) error
+			}); ok {
+				err := wsManager.SendResourceUpdateToUser(village.Village.PlayerID.String(), villageID.String(), resourceUpdate)
+				if err != nil {
+					s.logger.Warn("Error enviando notificación WebSocket de recursos",
+						zap.String("village_id", villageID.String()),
+						zap.String("player_id", village.Village.PlayerID.String()),
+						zap.Error(err),
+					)
+				} else {
+					s.metrics.WebSocketNotifications++
+					s.logger.Debug("Notificación WebSocket de recursos enviada",
+						zap.String("village_id", villageID.String()),
+						zap.String("player_id", village.Village.PlayerID.String()),
+					)
+				}
+			}
+		}
+	}
+
+	// Actualizar métricas
+	s.metrics.TotalUpdates++
+	s.metrics.LastUpdate = time.Now()
+	s.metrics.SuccessRate = float64(s.metrics.TotalUpdates-s.metrics.UpdateErrors) / float64(s.metrics.TotalUpdates) * 100
+
+	s.logger.Info("Recursos actualizados",
 		zap.String("village_id", villageID.String()),
 		zap.Int("wood_generated", woodGenerated),
 		zap.Int("stone_generated", stoneGenerated),
 		zap.Int("food_generated", foodGenerated),
 		zap.Int("gold_generated", goldGenerated),
 		zap.Float64("elapsed_hours", elapsedHours),
+		zap.Int("wood_total", newWood),
+		zap.Int("stone_total", newStone),
+		zap.Int("food_total", newFood),
+		zap.Int("gold_total", newGold),
 	)
 
 	return nil
@@ -254,20 +352,46 @@ func (s *ResourceService) GetResourceInfo(villageID uuid.UUID) (*models.Resource
 
 // Actualizar recursos de todas las aldeas
 func (s *ResourceService) UpdateAllVillageResources() error {
+	s.logger.Info("Iniciando actualización de recursos para todas las aldeas")
+
 	villages, err := s.villageRepo.GetAllVillages()
 	if err != nil {
+		s.logger.Error("Error obteniendo aldeas para actualizar recursos", zap.Error(err))
 		return err
 	}
 
+	s.logger.Info("Aldeas encontradas para actualizar recursos",
+		zap.Int("total_villages", len(villages)),
+	)
+
+	updatedCount := 0
+	errorCount := 0
+
 	for _, village := range villages {
+		s.logger.Debug("Procesando aldea para actualización de recursos",
+			zap.String("village_id", village.Village.ID.String()),
+			zap.String("village_name", village.Village.Name),
+			zap.String("player_id", village.Village.PlayerID.String()),
+		)
+
 		err := s.UpdateResources(village.Village.ID)
 		if err != nil {
 			s.logger.Error("Error al actualizar recursos de aldea",
 				zap.String("village_id", village.Village.ID.String()),
+				zap.String("village_name", village.Village.Name),
 				zap.Error(err),
 			)
+			errorCount++
+		} else {
+			updatedCount++
 		}
 	}
+
+	s.logger.Info("Actualización de recursos completada",
+		zap.Int("total_villages", len(villages)),
+		zap.Int("updated_successfully", updatedCount),
+		zap.Int("errors", errorCount),
+	)
 
 	return nil
 }
@@ -277,14 +401,19 @@ func (s *ResourceService) StartResourceGeneration() {
 	ticker := time.NewTicker(5 * time.Minute) // Actualizar cada 5 minutos
 	defer ticker.Stop()
 
-	s.logger.Info("Servicio de generación de recursos iniciado")
+	s.logger.Info("Servicio de generación de recursos iniciado",
+		zap.Duration("interval", 5*time.Minute),
+	)
 
 	for {
 		select {
 		case <-ticker.C:
+			s.logger.Info("Ejecutando ciclo de generación de recursos")
 			err := s.UpdateAllVillageResources()
 			if err != nil {
 				s.logger.Error("Error en la generación de recursos", zap.Error(err))
+			} else {
+				s.logger.Info("Ciclo de generación de recursos completado exitosamente")
 			}
 		}
 	}
@@ -434,4 +563,168 @@ func (s *ResourceService) GetResourceStorage(villageID uuid.UUID) (*models.Resou
 	}
 
 	return storage, nil
+}
+
+// GetResourceInfoWithFallback obtiene información de recursos con fallback inteligente
+func (s *ResourceService) GetResourceInfoWithFallback(villageID uuid.UUID) (*models.ResourceProduction, error) {
+	// Incrementar contador de polling
+	s.metrics.PollingRequests++
+	
+	// Intentar WebSocket primero si está disponible
+	if s.wsManager != nil {
+		if wsManager, ok := s.wsManager.(interface {
+			IsUserOnline(userID string) bool
+		}); ok {
+			village, err := s.villageRepo.GetVillageByID(villageID)
+			if err == nil && village != nil {
+				if wsManager.IsUserOnline(village.Village.PlayerID.String()) {
+					s.logger.Debug("Usuario conectado, usando WebSocket para recursos",
+						zap.String("village_id", villageID.String()),
+						zap.String("player_id", village.Village.PlayerID.String()),
+					)
+				} else {
+					s.logger.Debug("Usuario desconectado, usando polling para recursos",
+						zap.String("village_id", villageID.String()),
+						zap.String("player_id", village.Village.PlayerID.String()),
+					)
+				}
+			}
+		}
+	}
+	
+	// Usar método estándar (que incluye actualización automática)
+	return s.GetResourceInfo(villageID)
+}
+
+// UpdateResourcesWithRetry actualiza recursos con reintentos automáticos
+func (s *ResourceService) UpdateResourcesWithRetry(villageID uuid.UUID) error {
+	maxRetries := 3
+	var lastErr error
+	
+	for i := 0; i < maxRetries; i++ {
+		err := s.UpdateResources(villageID)
+		if err == nil {
+			return nil
+		}
+		
+		lastErr = err
+		s.metrics.UpdateErrors++
+		
+		if i < maxRetries-1 {
+			backoffDuration := time.Duration(i+1) * time.Second
+			s.logger.Warn("Error actualizando recursos, reintentando",
+				zap.String("village_id", villageID.String()),
+				zap.Int("attempt", i+1),
+				zap.Duration("backoff", backoffDuration),
+				zap.Error(err),
+			)
+			time.Sleep(backoffDuration)
+		}
+	}
+	
+	s.logger.Error("Error actualizando recursos después de múltiples intentos",
+		zap.String("village_id", villageID.String()),
+		zap.Int("max_retries", maxRetries),
+		zap.Error(lastErr),
+	)
+	
+	return fmt.Errorf("failed to update resources after %d retries: %v", maxRetries, lastErr)
+}
+
+// GetResourceMetrics obtiene métricas del sistema de recursos
+func (s *ResourceService) GetResourceMetrics() *models.ResourceMetrics {
+	return s.metrics
+}
+
+// ResetResourceMetrics reinicia las métricas del sistema
+func (s *ResourceService) ResetResourceMetrics() {
+	s.metrics = &models.ResourceMetrics{
+		WebSocketNotifications: 0,
+		PollingRequests:        0,
+		UpdateErrors:          0,
+		LastUpdate:            time.Now(),
+		TotalUpdates:         0,
+		SuccessRate:          0.0,
+	}
+	s.logger.Info("Métricas de recursos reiniciadas")
+}
+
+// UpdateAllVillageResourcesWithNotifications actualiza todas las aldeas y envía notificaciones masivas
+func (s *ResourceService) UpdateAllVillageResourcesWithNotifications() error {
+	s.logger.Info("Iniciando actualización masiva de recursos con notificaciones")
+
+	villages, err := s.villageRepo.GetAllVillages()
+	if err != nil {
+		s.logger.Error("Error obteniendo aldeas para actualización masiva", zap.Error(err))
+		return err
+	}
+
+	s.logger.Info("Aldeas encontradas para actualización masiva",
+		zap.Int("total_villages", len(villages)),
+	)
+
+	updatedCount := 0
+	errorCount := 0
+	resourceUpdates := make(map[string]models.ResourceUpdate)
+
+	for _, village := range villages {
+		s.logger.Debug("Procesando aldea para actualización masiva",
+			zap.String("village_id", village.Village.ID.String()),
+			zap.String("village_name", village.Village.Name),
+			zap.String("player_id", village.Village.PlayerID.String()),
+		)
+
+		err := s.UpdateResources(village.Village.ID)
+		if err != nil {
+			s.logger.Error("Error al actualizar recursos de aldea",
+				zap.String("village_id", village.Village.ID.String()),
+				zap.String("village_name", village.Village.Name),
+				zap.Error(err),
+			)
+			errorCount++
+		} else {
+			updatedCount++
+			
+			// Preparar notificación masiva
+			if s.wsManager != nil {
+				villageInfo, err := s.villageRepo.GetVillageByID(village.Village.ID)
+				if err == nil && villageInfo != nil {
+					resourceUpdate := models.ResourceUpdate{
+						VillageID:      village.Village.ID,
+						Wood:           villageInfo.Resources.Wood,
+						Stone:          villageInfo.Resources.Stone,
+						Food:           villageInfo.Resources.Food,
+						Gold:           villageInfo.Resources.Gold,
+						LastUpdate:     time.Now(),
+					}
+					resourceUpdates[village.Village.ID.String()] = resourceUpdate
+				}
+			}
+		}
+	}
+
+	// Enviar notificaciones masivas si hay WebSocket Manager
+	if s.wsManager != nil && len(resourceUpdates) > 0 {
+		if wsManager, ok := s.wsManager.(interface {
+			SendResourceUpdateToAllVillages(resources map[string]models.ResourceUpdate) error
+		}); ok {
+			err := wsManager.SendResourceUpdateToAllVillages(resourceUpdates)
+			if err != nil {
+				s.logger.Warn("Error enviando notificaciones masivas de recursos", zap.Error(err))
+			} else {
+				s.logger.Info("Notificaciones masivas de recursos enviadas",
+					zap.Int("villages_notified", len(resourceUpdates)),
+				)
+			}
+		}
+	}
+
+	s.logger.Info("Actualización masiva de recursos completada",
+		zap.Int("total_villages", len(villages)),
+		zap.Int("updated_successfully", updatedCount),
+		zap.Int("errors", errorCount),
+		zap.Int("notifications_sent", len(resourceUpdates)),
+	)
+
+	return nil
 }
