@@ -77,7 +77,7 @@ func main() {
 	routes.SetupAllRoutes(r, handlers, repos, services, authMiddleware, logger)
 
 	// Iniciar servicios en background
-	startBackgroundServices(services, logger)
+	startBackgroundServices(services, constructionService, logger)
 
 	// Configurar servidor HTTP
 	srv := &http.Server{
@@ -142,7 +142,7 @@ func initializeServices(db *sql.DB, cfg *config.Config, logger *zap.Logger) (*ro
 
 	// Servicios de dominio
 	resourceService := services.NewResourceService(villageRepo, buildingConfigRepo, logger, redisService)
-	constructionService := services.NewConstructionService(villageRepo, buildingConfigRepo, researchRepo, allianceRepo, redisService, logger, cfg.JWT.SecretKey)
+	constructionService := services.NewConstructionService(villageRepo, buildingConfigRepo, researchRepo, allianceRepo, redisService, logger, cfg.TimeZone)
 	chatService := services.NewChatService(chatRepo, redisService, logger)
 
 	// Configurar WebSocket en servicios
@@ -180,7 +180,7 @@ func initializeHandlers(repos *routes.Repositories, services *routes.Services, c
 }
 
 // startBackgroundServices inicia servicios en background
-func startBackgroundServices(services *routes.Services, logger *zap.Logger) {
+func startBackgroundServices(services *routes.Services, constructionService *services.ConstructionService, logger *zap.Logger) {
 	// Iniciar SyncManager del ChatService
 	if services.Chat != nil {
 		ctx := context.Background()
@@ -190,6 +190,9 @@ func startBackgroundServices(services *routes.Services, logger *zap.Logger) {
 			logger.Info("✅ SyncManager del chat iniciado exitosamente")
 		}
 	}
+
+	// Nota: Sistema de suscripción Redis para construcción implementado en el conteo automático
+	// La limpieza automática se ejecuta cuando se consulta el estado de construcción
 
 	// Iniciar generación de recursos
 	go func() {
@@ -211,7 +214,7 @@ func startBackgroundServices(services *routes.Services, logger *zap.Logger) {
 // stopBackgroundServices detiene servicios en background
 func stopBackgroundServices(services *routes.Services, logger *zap.Logger) {
 	logger.Info("Deteniendo servicios en background...")
-	
+
 	// Detener SyncManager del ChatService
 	if services.Chat != nil {
 		if err := services.Chat.StopSyncManager(); err != nil {
@@ -220,6 +223,6 @@ func stopBackgroundServices(services *routes.Services, logger *zap.Logger) {
 			logger.Info("✅ SyncManager del chat detenido exitosamente")
 		}
 	}
-	
+
 	logger.Info("Servicios en background detenidos")
 }

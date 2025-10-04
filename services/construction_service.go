@@ -26,7 +26,7 @@ var (
 
 // Constantes para límites de construcción
 const (
-	MaxConstructionSlots = 4  // Máximo de slots de construcción por aldea
+	MaxConstructionSlots    = 4 // Máximo de slots de construcción por aldea
 	ActiveConstructionSlots = 2 // Slots activos (los otros 2 se habilitan con micropagos)
 )
 
@@ -590,13 +590,13 @@ func (s *ConstructionService) sendBuildingUpgradeStarted(villageID uuid.UUID, bu
 	message := websocket.WSMessage{
 		Type: "building_upgrade_started",
 		Data: map[string]interface{}{
-			"village_id":       villageID.String(),
-			"building_type":    buildingType,
-			"target_level":     targetLevel,
-			"upgrade_time":     upgradeTime.String(),
-			"completion_time":  completionTime.Format(time.RFC3339),
-			"costs":            costs,
-			"timestamp":        time.Now().Unix(),
+			"village_id":      villageID.String(),
+			"building_type":   buildingType,
+			"target_level":    targetLevel,
+			"upgrade_time":    upgradeTime.String(),
+			"completion_time": completionTime.Format(time.RFC3339),
+			"costs":           costs,
+			"timestamp":       time.Now().Unix(),
 		},
 		Time: time.Now(),
 	}
@@ -656,9 +656,9 @@ func (s *ConstructionService) sendBuildingUpgradeCompleted(villageID uuid.UUID, 
 	var effects map[string]interface{}
 	if err == nil && config != nil {
 		effects = map[string]interface{}{
-			"storage_capacity": config.StorageCapacity,
-			"production_per_hour": config.ProductionPerHour,
-			"build_time_seconds": config.BuildTimeSeconds,
+			"storage_capacity":            config.StorageCapacity,
+			"production_per_hour":         config.ProductionPerHour,
+			"build_time_seconds":          config.BuildTimeSeconds,
 			"construction_speed_modifier": config.ConstructionSpeedModifier,
 		}
 	}
@@ -666,12 +666,12 @@ func (s *ConstructionService) sendBuildingUpgradeCompleted(villageID uuid.UUID, 
 	message := websocket.WSMessage{
 		Type: "building_upgrade_completed",
 		Data: map[string]interface{}{
-			"village_id":       villageID.String(),
-			"building_type":    buildingType,
-			"new_level":        newLevel,
-			"completion_time":  time.Now().Format(time.RFC3339),
-			"effects":          effects,
-			"timestamp":        time.Now().Unix(),
+			"village_id":      villageID.String(),
+			"building_type":   buildingType,
+			"new_level":       newLevel,
+			"completion_time": time.Now().Format(time.RFC3339),
+			"effects":         effects,
+			"timestamp":       time.Now().Unix(),
 		},
 		Time: time.Now(),
 	}
@@ -703,11 +703,11 @@ func (s *ConstructionService) sendBuildingUpgradeCancelled(villageID uuid.UUID, 
 		Type: "building_upgrade_cancelled",
 		Data: map[string]interface{}{
 			"village_id":        villageID.String(),
-			"building_type":    buildingType,
-			"refund_amount":    refundAmount,
+			"building_type":     buildingType,
+			"refund_amount":     refundAmount,
 			"refund_percentage": refundPercentage,
-			"cancelled_at":     time.Now().Format(time.RFC3339),
-			"timestamp":        time.Now().Unix(),
+			"cancelled_at":      time.Now().Format(time.RFC3339),
+			"timestamp":         time.Now().Unix(),
 		},
 		Time: time.Now(),
 	}
@@ -782,7 +782,7 @@ func (s *ConstructionService) updateAllBuildingProgress() {
 		for buildingType, building := range village.Buildings {
 			if building.IsUpgrading && building.UpgradeCompletionTime != nil {
 				timeRemaining := time.Until(*building.UpgradeCompletionTime)
-				
+
 				// Solo enviar actualización si aún queda tiempo
 				if timeRemaining > 0 {
 					progressPercent := s.calculateProgressPercent(building, timeRemaining)
@@ -837,11 +837,81 @@ func (s *ConstructionService) getActiveConstructionCount(villageID uuid.UUID) (i
 	}
 
 	count := 0
-	for _, building := range village.Buildings {
-		if building.IsUpgrading {
-			count++
+	totalUpgrading := 0
+	completedUpgrades := 0
+	invalidUpgrades := 0
+	currentTime := time.Now()
+
+	// Log inicial para debugging
+	s.logger.Debug("Iniciando conteo de construcción activa",
+		zap.String("village_id", villageID.String()),
+		zap.Time("current_time", currentTime),
+	)
+
+	for buildingType, building := range village.Buildings {
+		if !building.IsUpgrading {
+			continue // Saltar edificios no en mejora
+		}
+
+		totalUpgrading++ // Contador total de edificios marcados como mejorando
+
+		// Validación robusta: verificar que tiene tiempo de finalización
+		if building.UpgradeCompletionTime == nil {
+			// Edificio marcado como mejorando pero sin tiempo - DATO INVÁLIDO
+			s.logger.Warn("Edificio marcado como mejorando sin tiempo de finalización",
+				zap.String("village_id", villageID.String()),
+				zap.String("building_type", buildingType),
+				zap.Int("level", building.Level),
+			)
+			invalidUpgrades++
+			continue
+		}
+
+		// Si el tiempo ya pasó, es una mejora completada no limpiada
+		if building.UpgradeCompletionTime.Before(currentTime) ||
+			building.UpgradeCompletionTime.Equal(currentTime) {
+			s.logger.Debug("Mejora completada encontrada (sin limpiar)",
+				zap.String("village_id", villageID.String()),
+				zap.String("building_type", buildingType),
+				zap.Int("level", building.Level),
+				zap.Time("completion_time", *building.UpgradeCompletionTime),
+				zap.Duration("time_past", currentTime.Sub(*building.UpgradeCompletionTime)),
+			)
+			completedUpgrades++
+			continue
+		}
+
+		// Solo contar como activo si realmente está en progreso
+		timeRemaining := building.UpgradeCompletionTime.Sub(currentTime)
+		s.logger.Debug("Mejora activa confirmada",
+			zap.String("village_id", villageID.String()),
+			zap.String("building_type", buildingType),
+			zap.Int("level", building.Level),
+			zap.Duration("time_remaining", timeRemaining),
+		)
+		count++
+	}
+
+	// Auto-limpieza si detectamos mejoras completadas sin limpiar
+	if completedUpgrades > 0 {
+		s.logger.Info("Ejecutando auto-limpieza de mejoras completadas",
+			zap.String("village_id", villageID.String()),
+			zap.Int("completed_upgrades", completedUpgrades),
+		)
+		if err := s.villageRepo.CleanupCompletedUpgrades(villageID); err != nil {
+			s.logger.Error("Error en auto-limpieza", zap.Error(err))
 		}
 	}
+
+	// Log detallado del resultado
+	s.logger.Info("Conteo de construcción completado",
+		zap.String("village_id", villageID.String()),
+		zap.Int("active_count", count),
+		zap.Int("total_upgrading", totalUpgrading),
+		zap.Int("completed_upgrades", completedUpgrades),
+		zap.Int("invalid_upgrades", invalidUpgrades),
+		zap.Int("available_slots", ActiveConstructionSlots-count),
+	)
 
 	return count, nil
 }
@@ -885,40 +955,40 @@ func (s *ConstructionService) GetConstructionQueueStatus(villageID uuid.UUID) (*
 			}
 
 			buildingsInConstruction = append(buildingsInConstruction, BuildingConstructionInfo{
-				BuildingType:     buildingType,
-				CurrentLevel:     building.Level,
-				TargetLevel:      building.Level + 1,
-				TimeRemaining:    timeRemaining,
-				ProgressPercent:  s.calculateProgressPercent(building, timeRemaining),
-				CompletionTime:   building.UpgradeCompletionTime,
+				BuildingType:    buildingType,
+				CurrentLevel:    building.Level,
+				TargetLevel:     building.Level + 1,
+				TimeRemaining:   timeRemaining,
+				ProgressPercent: s.calculateProgressPercent(building, timeRemaining),
+				CompletionTime:  building.UpgradeCompletionTime,
 			})
 		}
 	}
 
 	return &ConstructionQueueStatus{
-		ActiveSlots:           ActiveConstructionSlots,
-		MaxSlots:              MaxConstructionSlots,
-		AvailableSlots:       ActiveConstructionSlots - activeCount,
+		ActiveSlots:             ActiveConstructionSlots,
+		MaxSlots:                MaxConstructionSlots,
+		AvailableSlots:          ActiveConstructionSlots - activeCount,
 		BuildingsInConstruction: buildingsInConstruction,
-		CanStartConstruction:  activeCount < ActiveConstructionSlots,
+		CanStartConstruction:    activeCount < ActiveConstructionSlots,
 	}, nil
 }
 
 // ConstructionQueueStatus representa el estado de la cola de construcción
 type ConstructionQueueStatus struct {
-	ActiveSlots            int                      `json:"active_slots"`
-	MaxSlots               int                      `json:"max_slots"`
-	AvailableSlots         int                      `json:"available_slots"`
+	ActiveSlots             int                        `json:"active_slots"`
+	MaxSlots                int                        `json:"max_slots"`
+	AvailableSlots          int                        `json:"available_slots"`
 	BuildingsInConstruction []BuildingConstructionInfo `json:"buildings_in_construction"`
-	CanStartConstruction   bool                     `json:"can_start_construction"`
+	CanStartConstruction    bool                       `json:"can_start_construction"`
 }
 
 // BuildingConstructionInfo representa información de un edificio en construcción
 type BuildingConstructionInfo struct {
-	BuildingType     string         `json:"building_type"`
-	CurrentLevel     int            `json:"current_level"`
-	TargetLevel      int            `json:"target_level"`
-	TimeRemaining    time.Duration  `json:"time_remaining"`
-	ProgressPercent  float64        `json:"progress_percent"`
-	CompletionTime   *time.Time     `json:"completion_time,omitempty"`
+	BuildingType    string        `json:"building_type"`
+	CurrentLevel    int           `json:"current_level"`
+	TargetLevel     int           `json:"target_level"`
+	TimeRemaining   time.Duration `json:"time_remaining"`
+	ProgressPercent float64       `json:"progress_percent"`
+	CompletionTime  *time.Time    `json:"completion_time,omitempty"`
 }

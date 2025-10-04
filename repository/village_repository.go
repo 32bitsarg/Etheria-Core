@@ -696,3 +696,58 @@ func (r *VillageRepository) CalculateInitialResources() (int, int, int, int) {
 
 	return initialWood, initialStone, initialFood, initialGold
 }
+
+// GetConstructionQueue obtiene la cola de construcción de una aldea (solo mejoras activas)
+func (r *VillageRepository) GetConstructionQueue(villageID uuid.UUID) ([]models.ConstructionQueueItem, error) {
+	query := `
+		SELECT 
+			type as building_type,
+			level,
+			is_upgrading,
+			upgrade_completion_time,
+			created_at as started_at
+		FROM buildings 
+		WHERE village_id = $1 
+		AND is_upgrading = true
+		AND upgrade_completion_time > NOW()
+		ORDER BY created_at ASC
+	`
+
+	rows, err := r.db.Query(query, villageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var queue []models.ConstructionQueueItem
+	for rows.Next() {
+		var item models.ConstructionQueueItem
+		err := rows.Scan(
+			&item.BuildingType,
+			&item.Level,
+			&item.IsUpgrading,
+			&item.CompletionTime,
+			&item.StartedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		queue = append(queue, item)
+	}
+
+	return queue, nil
+}
+
+// CleanupCompletedUpgrades limpia las mejoras completadas en la base de datos
+func (r *VillageRepository) CleanupCompletedUpgrades(villageID uuid.UUID) error {
+	query := `
+		UPDATE buildings 
+		SET is_upgrading = false, upgrade_completion_time = NULL
+		WHERE village_id = $1 
+		AND is_upgrading = true 
+		AND upgrade_completion_time <= NOW()
+	`
+
+	_, err := r.db.Exec(query, villageID)
+	return err
+}

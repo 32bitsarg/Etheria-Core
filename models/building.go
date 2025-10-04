@@ -690,3 +690,12 @@ type BuildingUpgradeInfo struct {
 	TrainingSpeedImprovement     float64       `json:"training_speed_improvement,omitempty"`
 	ConstructionSpeedImprovement float64       `json:"construction_speed_improvement,omitempty"`
 }
+
+// ConstructionQueueItem representa un elemento en la cola de construcción
+type ConstructionQueueItem struct {
+	BuildingType   string     `json:"building_type"`
+	Level          int        `json:"level"`
+	IsUpgrading    bool       `json:"is_upgrading"`
+	CompletionTime *time.Time `json:"completion_time,omitempty"`
+	StartedAt      time.Time  `json:"started_at"`
+}

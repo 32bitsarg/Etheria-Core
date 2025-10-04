@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 )
@@ -590,7 +591,7 @@ func (m *Manager) SendEconomyNotification(userID string, notificationType string
 		Type: "economy_notification",
 		Data: map[string]interface{}{
 			"notification_type": notificationType,
-			"data":             data,
+			"data":              data,
 		},
 		Time: time.Now(),
 	}
@@ -631,10 +632,10 @@ func (m *Manager) SendAllianceNotification(userID string, alliance models.Allian
 	message := WSMessage{
 		Type: "alliance_notification",
 		Data: map[string]interface{}{
-			"alliance_id":      alliance.ID,
-			"alliance_name":    alliance.Name,
+			"alliance_id":       alliance.ID,
+			"alliance_name":     alliance.Name,
 			"notification_type": notificationType,
-			"data":             data,
+			"data":              data,
 		},
 		Time: time.Now(),
 	}
@@ -671,4 +672,27 @@ func (m *Manager) SendGlobalNotification(title string, message string, notificat
 
 	messageBytes, _ := json.Marshal(wsMessage)
 	m.broadcast <- messageBytes
+}
+
+// HandleUpgradeCompletion maneja la finalización de mejoras de edificios
+func (m *Manager) HandleUpgradeCompletion(villageID uuid.UUID, buildingType string) {
+	// Obtener información de la aldea para encontrar el propietario
+	village, err := m.villageRepo.GetVillageByID(villageID)
+	if err != nil || village == nil {
+		m.logger.Error("Error obteniendo aldea para notificación de mejora", zap.Error(err))
+		return
+	}
+
+	// Enviar notificación al propietario de la aldea
+	message := WSMessage{
+		Type: "building_upgrade_completed",
+		Data: map[string]interface{}{
+			"village_id":    villageID.String(),
+			"building_type": buildingType,
+			"timestamp":     time.Now().Unix(),
+		},
+		Time: time.Now(),
+	}
+
+	m.SendToUser(village.Village.PlayerID.String(), "building_upgrade_completed", message.Data)
 }
